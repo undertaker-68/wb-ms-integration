@@ -304,8 +304,8 @@ def main() -> None:
     log.info(
         "done",
         extra={
-            "created": created,
-            "updated": updated,
+            "created_count": created,
+            "updated-count": updated,
             "skipped_no_article": skipped_no_article,
             "skipped_no_product": skipped_no_product,
             "demand_created": demand_created,
