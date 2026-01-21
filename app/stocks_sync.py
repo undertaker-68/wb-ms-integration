@@ -70,7 +70,6 @@ def build_stocks_payload(ms: MSClient, ms_rows: List[Dict]) -> Tuple[List[Dict],
 
     return out, stats
 
-
 def chunk(lst: List[Dict], n: int) -> List[List[Dict]]:
     return [lst[i:i + n] for i in range(0, len(lst), n)]
 
