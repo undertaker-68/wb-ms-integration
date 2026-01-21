@@ -144,16 +144,41 @@ def main() -> None:
 
         if existing:
             ms_id = existing["id"]
-            ms.update_customer_order(ms_id, payload)
-            updated += 1
-            log.info("ms_order_updated", order_id=oid, ms_id=ms_id, article=article,
-                     supplierStatus=supplier_status, wbStatus=wb_status)
-            ms_order = existing
+            if cfg.test_mode:
+                log.info("TEST_MODE_skip_ms_order_update", order_id=oid, ms_id=ms_id, article=article)
+                ms_order = existing
+                updated += 1
+            else:
+                ms.update_customer_order(ms_id, payload)
+                updated += 1
+                log.info(
+                    "ms_order_updated",
+                    order_id=oid, ms_id=ms_id, article=article,
+                    supplierStatus=supplier_status, wbStatus=wb_status
+                )
+                ms_order = existing
         else:
-            ms_order = ms.create_customer_order(payload)
-            created += 1
-            log.info("ms_order_created", order_id=oid, ms_id=ms_order.get("id"), article=article,
-                     supplierStatus=supplier_status, wbStatus=wb_status)
+            if cfg.test_mode:
+                created += 1
+                log.info("TEST_MODE_skip_ms_order_create", order_id=oid, article=article, payload_preview=payload)
+                # фейковый объект, чтобы ниже работала логика demand
+                ms_order = {
+                    "id": "TEST",
+                    "meta": {"type": "customerorder", "href": "TEST"},
+                    "externalCode": ext_code,
+                    "name": ext_code,
+                    "organization": payload["organization"],
+                    "agent": payload["agent"],
+                    "store": payload["store"],
+                }
+            else:
+                ms_order = ms.create_customer_order(payload)
+                created += 1
+                log.info(
+                    "ms_order_created",
+                    order_id=oid, ms_id=ms_order.get("id"), article=article,
+                    supplierStatus=supplier_status, wbStatus=wb_status
+                )
 
         # 3) Отмена → снимаем резерв (упрощённо: ставим reserve=0 на позиции, если надо — сделаем точнее)
         if supplier_status == "cancel" or wb_status == "canceled":
