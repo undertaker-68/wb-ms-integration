@@ -13,7 +13,7 @@ class HttpClient:
         self.timeout = timeout
         self.session = requests.Session()
 
-        def request(self, method: str, path: str, *, params=None, json_body=None):
+    def request(self, method: str, path: str, *, params=None, json_body=None):
         url = f"{self.base_url}{path}"
         t0 = time.time()
 
