@@ -160,6 +160,29 @@ def main() -> None:
     cancelled = 0
     skipped_no_article = 0
 
+    # Собираем уникальные артикулы из WB
+    articles = []
+    for o in all_orders:
+        a = extract_article(o)
+        if a:
+            articles.append(a)
+    uniq_articles = sorted(set(articles))
+
+    # Кэш: article -> product
+    product_by_article: Dict[str, Dict[str, Any]] = {}
+
+    # Быстрый вариант: для каждого артикула делаем 1 запрос, но с задержкой + кешем (уже лучше),
+    # а в дальнейшем заменим на более умный батч по search.
+    # Чтобы не ловить лимит — пауза 0.15с.
+    import time as _t
+    for a in uniq_articles:
+        p = ms.find_product_by_article(a)
+        if p:
+            product_by_article[a] = p
+        _t.sleep(0.15)
+
+    log.info("ms_products_prefetched", extra={"uniq_articles": len(uniq_articles), "found": len(product_by_article)})
+
     for o in all_orders:
         order_uid = str(o.get("orderUid") or o["id"])  # номер из интерфейса WB
         ext_code = order_uid
