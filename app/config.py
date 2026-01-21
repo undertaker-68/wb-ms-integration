@@ -4,6 +4,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# в Config:
+test_mode: bool
+
+# в load_config():
+test_mode=_opt("TEST_MODE", "0") == "1",
+
 def _must(name: str) -> str:
     v = os.getenv(name)
     if not v:
