@@ -6,21 +6,23 @@ from .http import HttpClient
 from .logging_setup import setup_logging
 from .ms_client import MSClient
 from .wb_client import WBClient
-import json, os
+
+import json
+import os
+import time as _t
 
 log = logging.getLogger("orders_sync")
 
 
 def build_ms_order_payload(cfg, wb_order: Dict[str, Any], product: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Номер заказа МС = номеру заказа WB (как в интерфейсе) => используем orderUid.
-    Если orderUid нет — fallback на id.
+    Номер заказа МС = Номеру заказа WB (как в интерфейсе) => используем WB id (например 4508276599).
     """
-    order_uid = str(wb_order.get("orderUid") or wb_order["id"])
-    external_code = order_uid
-    name = order_uid
+    order_num = str(wb_order["id"])
+    external_code = order_num
+    name = order_num
 
-    qty = 1  # WB FBS заказ обычно 1 шт; если будет иначе — расширим
+    qty = 1  # WB FBS заказ: 1 позиция (если будет иначе — расширим)
     sale_prices = product.get("salePrices") or []
     if sale_prices and sale_prices[0].get("value") is not None:
         price = int(sale_prices[0]["value"])
@@ -38,28 +40,16 @@ def build_ms_order_payload(cfg, wb_order: Dict[str, Any], product: Dict[str, Any
         "name": name,
         "externalCode": external_code,
         "organization": {
-            "meta": {
-                "type": "organization",
-                "href": f"{cfg.ms_base_url}/entity/organization/{cfg.ms_org_id}",
-            }
+            "meta": {"type": "organization", "href": f"{cfg.ms_base_url}/entity/organization/{cfg.ms_org_id}"}
         },
         "agent": {
-            "meta": {
-                "type": "counterparty",
-                "href": f"{cfg.ms_base_url}/entity/counterparty/{cfg.ms_agent_id_wb}",
-            }
+            "meta": {"type": "counterparty", "href": f"{cfg.ms_base_url}/entity/counterparty/{cfg.ms_agent_id_wb}"}
         },
         "store": {
-            "meta": {
-                "type": "store",
-                "href": f"{cfg.ms_base_url}/entity/store/{cfg.ms_store_id_wb}",
-            }
+            "meta": {"type": "store", "href": f"{cfg.ms_base_url}/entity/store/{cfg.ms_store_id_wb}"}
         },
         "salesChannel": {
-            "meta": {
-                "type": "saleschannel",
-                "href": f"{cfg.ms_base_url}/entity/saleschannel/{cfg.ms_sales_channel_id_wb}",
-            }
+            "meta": {"type": "saleschannel", "href": f"{cfg.ms_base_url}/entity/saleschannel/{cfg.ms_sales_channel_id_wb}"}
         },
         "positions": positions,
     }
@@ -96,7 +86,6 @@ def build_ms_demand_payload(cfg, ms_order: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def extract_article(wb_order: Dict[str, Any]) -> str:
-    # В WB /orders/new в примере есть поле article
     return str(wb_order.get("article") or "").strip()
 
 
@@ -114,6 +103,7 @@ def main() -> None:
         headers={"Authorization": cfg.wb_token},
         timeout=cfg.http_timeout_sec,
     )
+
     ms = MSClient(ms_http)
     wb = WBClient(wb_http)
 
@@ -137,7 +127,7 @@ def main() -> None:
     new_orders = wb.get_new_orders()
     log.info("wb_new_orders_loaded", extra={"count": len(new_orders)})
 
-    # 2) дополнительно активные из /orders
+    # 2) активные из /orders
     listed: List[Dict[str, Any]] = []
     next_ = 0
     for _ in range(10):
@@ -147,7 +137,6 @@ def main() -> None:
         next_ = page.get("next", 0) if isinstance(page, dict) else 0
 
         log.info("wb_orders_page", extra={"got": len(batch), "next": next_})
-
         if not batch:
             break
 
@@ -160,17 +149,11 @@ def main() -> None:
 
     log.info("wb_orders_total", extra={"count": len(all_orders)})
 
-    seen = load_seen()
-
-    # берем “ключ” заказа так же, как номер для МС (см. ниже)
+    # ---- BOOTSTRAP / NEW ONLY ----
     def ms_order_number(o: dict) -> str:
-        ou = str(o.get("orderUid") or "")
-        if "_" in ou and ou.split("_", 1)[0].isdigit():
-            return ou.split("_", 1)[0]          # берем числовую часть до "_"
-        if ou.isdigit():
-            return ou
-        return str(o["id"])                     # fallback на внутренний id
+        return str(o["id"])  # строго WB id (например 4508276599)
 
+    seen = load_seen()
     current = {ms_order_number(o) for o in all_orders}
 
     if bootstrap or not seen:
@@ -181,10 +164,10 @@ def main() -> None:
     new_only = [o for o in all_orders if ms_order_number(o) not in seen]
     log.info("after_filter_new_only", extra={"new": len(new_only), "seen": len(seen)})
 
-    # дальше работаем не с all_orders, а с new_only
+    # дальше работаем только с новыми
     all_orders = new_only
 
-    # 3) статусы пачкой
+    # статусы (не критично, но оставляем)
     ids = [int(o["id"]) for o in all_orders if "id" in o]
     statuses = wb.get_orders_status(ids)
     status_by_id: Dict[int, Dict[str, Any]] = {
@@ -192,55 +175,43 @@ def main() -> None:
     }
     log.info("wb_statuses_loaded", extra={"count": len(status_by_id)})
 
-    created = 0
-    updated = 0
+    # Prefetch products по артикулам (новых обычно мало)
+    articles = [extract_article(o) for o in all_orders if extract_article(o)]
+    uniq_articles = sorted(set(articles))
+    product_by_article: Dict[str, Dict[str, Any]] = {}
+    for a in uniq_articles:
+        p = ms.find_product_by_article(a)
+        if p:
+            product_by_article[a] = p
+        _t.sleep(0.12)
+
+    log.info("ms_products_prefetched", extra={"uniq_articles": len(uniq_articles), "found": len(product_by_article)})
+
+    created_count = 0
+    updated_count = 0
     skipped_no_product = 0
     demand_created = 0
     cancelled = 0
     skipped_no_article = 0
 
-    # Собираем уникальные артикулы из WB
-    articles = []
     for o in all_orders:
-        a = extract_article(o)
-        if a:
-            articles.append(a)
-    uniq_articles = sorted(set(articles))
+        order_num = str(o["id"])
+        ext_code = order_num
 
-    # Кэш: article -> product
-    product_by_article: Dict[str, Dict[str, Any]] = {}
-
-    # Быстрый вариант: для каждого артикула делаем 1 запрос, но с задержкой + кешем (уже лучше),
-    # а в дальнейшем заменим на более умный батч по search.
-    # Чтобы не ловить лимит — пауза 0.15с.
-    import time as _t
-    for a in uniq_articles:
-        p = ms.find_product_by_article(a)
-        if p:
-            product_by_article[a] = p
-        _t.sleep(0.15)
-
-    log.info("ms_products_prefetched", extra={"uniq_articles": len(uniq_articles), "found": len(product_by_article)})
-
-    for o in all_orders:
-        order_uid = str(o.get("orderUid") or o["id"])  # номер из интерфейса WB
-        ext_code = order_uid
-
-        oid = int(o["id"])  # внутренний WB id (для поиска статуса)
-        st = status_by_id.get(oid, {})
-        supplier_status = st.get("supplierStatus")  # new/confirm/complete/cancel
-        wb_status = st.get("wbStatus")              # waiting/sorted/sold/canceled
+        st = status_by_id.get(int(o["id"]), {})
+        supplier_status = st.get("supplierStatus")
+        wb_status = st.get("wbStatus")
 
         article = extract_article(o)
         if not article:
             skipped_no_article += 1
-            log.warning("skip_no_article", extra={"order_id": order_uid})
+            log.warning("skip_no_article", extra={"order_id": order_num})
             continue
 
         product = product_by_article.get(article)
         if not product:
             skipped_no_product += 1
-            log.warning("skip_no_ms_product", extra={"order_id": order_uid, "article": article})
+            log.warning("skip_no_ms_product", extra={"order_id": order_num, "article": article})
             continue
 
         existing = ms.find_customer_order_by_external_code(ext_code)
@@ -249,23 +220,19 @@ def main() -> None:
         if existing:
             ms_id = existing["id"]
             if cfg.test_mode:
-                updated += 1
-                log.info("TEST_MODE_skip_ms_order_update",
-                         extra={"order_id": order_uid, "ms_id": ms_id, "article": article})
+                updated_count += 1
+                log.info("TEST_MODE_skip_ms_order_update", extra={"order_id": order_num, "ms_id": ms_id, "article": article})
                 ms_order = existing
             else:
                 ms.update_customer_order(ms_id, payload)
-                updated += 1
-                log.info("ms_order_updated",
-                         extra={"order_id": order_uid, "ms_id": ms_id, "article": article,
-                                "supplierStatus": supplier_status, "wbStatus": wb_status})
+                updated_count += 1
+                log.info("ms_order_updated", extra={"order_id": order_num, "ms_id": ms_id, "article": article,
+                                                    "supplierStatus": supplier_status, "wbStatus": wb_status})
                 ms_order = existing
         else:
             if cfg.test_mode:
-                created += 1
-                log.info("TEST_MODE_skip_ms_order_create",
-                         extra={"order_id": order_uid, "article": article})
-                # фейковый объект, чтобы ниже не падало
+                created_count += 1
+                log.info("TEST_MODE_skip_ms_order_create", extra={"order_id": order_num, "article": article})
                 ms_order = {
                     "id": "TEST",
                     "meta": {"type": "customerorder", "href": "TEST"},
@@ -277,35 +244,39 @@ def main() -> None:
                 }
             else:
                 ms_order = ms.create_customer_order(payload)
-                created += 1
-                log.info("ms_order_created",
-                         extra={"order_id": order_uid, "ms_id": ms_order.get("id"), "article": article,
-                                "supplierStatus": supplier_status, "wbStatus": wb_status})
+                created_count += 1
+                log.info("ms_order_created", extra={"order_id": order_num, "ms_id": ms_order.get("id"), "article": article,
+                                                    "supplierStatus": supplier_status, "wbStatus": wb_status})
 
         # отмена
         if supplier_status == "cancel" or wb_status == "canceled":
             cancelled += 1
-            log.info("order_cancelled_seen", extra={"order_id": order_uid, "ms_id": ms_order.get("id")})
+            log.info("order_cancelled_seen", extra={"order_id": order_num, "ms_id": ms_order.get("id")})
             continue
 
         # complete -> demand
         if supplier_status == "complete":
             if cfg.test_mode:
-                log.info("TEST_MODE_skip_ms_demand_create", extra={"order_id": order_uid, "externalCode": ext_code})
+                log.info("TEST_MODE_skip_ms_demand_create", extra={"order_id": order_num, "externalCode": ext_code})
             else:
                 if not ms.find_demand_by_external_code(ext_code):
                     demand_payload = build_ms_demand_payload(cfg, ms_order)
                     ms.create_demand(demand_payload)
                     demand_created += 1
-                    log.info("ms_demand_created", extra={"order_id": order_uid, "externalCode": ext_code})
+                    log.info("ms_demand_created", extra={"order_id": order_num, "externalCode": ext_code})
                 else:
-                    log.info("ms_demand_exists", extra={"order_id": order_uid, "externalCode": ext_code})
+                    log.info("ms_demand_exists", extra={"order_id": order_num, "externalCode": ext_code})
+
+    # помечаем обработанные как seen
+    if all_orders:
+        seen |= {str(o["id"]) for o in all_orders}
+        save_seen(seen)
 
     log.info(
         "done",
         extra={
-            "created_count": created,
-            "updated-count": updated,
+            "created_count": created_count,
+            "updated_count": updated_count,
             "skipped_no_article": skipped_no_article,
             "skipped_no_product": skipped_no_product,
             "demand_created": demand_created,
