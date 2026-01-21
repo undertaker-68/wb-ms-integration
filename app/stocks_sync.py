@@ -60,12 +60,12 @@ def main() -> None:
     ms = MSClient(ms_http)
     wb = WBClient(wb_http)
 
-    log.info("start", warehouse_id=cfg.wb_warehouse_id, ms_store_id=cfg.ms_store_id_wb)
+    log.info("start", extra={"warehouse_id": cfg.wb_warehouse_id, "ms_store_id": cfg.ms_store_id_wb})
 
     rows = ms.report_stock_by_store(cfg.ms_store_id_wb)
     stocks, stats = build_stocks_payload(rows)
 
-    log.info("prepared", **stats)
+    log.info("prepared", extra=stats)
 
     if cfg.test_mode:
         log.info(
@@ -82,9 +82,9 @@ def main() -> None:
     for part in chunk(stocks, 1000):
         total_batches += 1
         wb.set_stocks(cfg.wb_warehouse_id, part)
-        log.info("batch_sent", batch=total_batches, batch_size=len(part))
+        log.info("batch_sent", extra={"batch": total_batches, "batch_size": len(part)})
 
-    log.info("done", batches=total_batches, total=stats["total"], sent=stats["sent"], skipped_no_sku=stats["skipped_no_sku"])
+    log.info("done", extra={"batches": total_batches, "total": stats["total"], "sent": stats["sent"], "skipped_no_sku": stats["skipped_no_sku"]})
 
 if __name__ == "__main__":
     main()
