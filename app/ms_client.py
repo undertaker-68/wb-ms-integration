@@ -73,3 +73,14 @@ class MSClient:
             path = href
         return self.http.request("GET", path)
 
+    def get_by_href(self, href: str) -> Dict[str, Any]:
+        # href приходит полный, типа https://api.moysklad.ru/api/remap/1.2/entity/product/<id>
+        # превращаем в path для нашего HttpClient
+        base = self.http.base_url.rstrip("/")
+        if href.startswith(base):
+            path = href[len(base):]
+        else:
+            # на всякий случай
+            path = href
+        return self.http.request("GET", path)
+
