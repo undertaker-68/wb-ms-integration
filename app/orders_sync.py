@@ -6,6 +6,7 @@ from .http import HttpClient
 from .logging_setup import setup_logging
 from .ms_client import MSClient
 from .wb_client import WBClient
+import json, os
 
 log = logging.getLogger("orders_sync")
 
@@ -118,6 +119,20 @@ def main() -> None:
 
     log.info("start", extra={"test_mode": getattr(cfg, "test_mode", False)})
 
+    state_file = os.getenv("STATE_FILE", "state_seen_orders.json")
+    bootstrap = os.getenv("BOOTSTRAP", "0") == "1"
+
+    def load_seen() -> set[str]:
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception:
+            return set()
+
+    def save_seen(seen: set[str]) -> None:
+        with open(state_file, "w", encoding="utf-8") as f:
+            json.dump(sorted(seen), f, ensure_ascii=False, indent=2)
+
     # 1) новые
     new_orders = wb.get_new_orders()
     log.info("wb_new_orders_loaded", extra={"count": len(new_orders)})
@@ -144,6 +159,30 @@ def main() -> None:
     all_orders = list(all_orders_by_id.values())
 
     log.info("wb_orders_total", extra={"count": len(all_orders)})
+
+    seen = load_seen()
+
+    # берем “ключ” заказа так же, как номер для МС (см. ниже)
+    def ms_order_number(o: dict) -> str:
+        ou = str(o.get("orderUid") or "")
+        if "_" in ou and ou.split("_", 1)[0].isdigit():
+            return ou.split("_", 1)[0]          # берем числовую часть до "_"
+        if ou.isdigit():
+            return ou
+        return str(o["id"])                     # fallback на внутренний id
+
+    current = {ms_order_number(o) for o in all_orders}
+
+    if bootstrap or not seen:
+        save_seen(current)
+        log.info("bootstrap_done_skip_processing", extra={"saved": len(current), "state_file": state_file})
+        return
+
+    new_only = [o for o in all_orders if ms_order_number(o) not in seen]
+    log.info("after_filter_new_only", extra={"new": len(new_only), "seen": len(seen)})
+
+    # дальше работаем не с all_orders, а с new_only
+    all_orders = new_only
 
     # 3) статусы пачкой
     ids = [int(o["id"]) for o in all_orders if "id" in o]
