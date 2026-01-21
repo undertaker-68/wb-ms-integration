@@ -61,3 +61,15 @@ class MSClient:
     def search_products(self, text: str, limit: int = 1000) -> List[Dict[str, Any]]:
         data = self.http.request("GET", "/entity/product", params={"search": text, "limit": limit})
         return data.get("rows", []) if isinstance(data, dict) else []
+
+    def get_by_href(self, href: str) -> Dict[str, Any]:
+        # href приходит полный, типа https://api.moysklad.ru/api/remap/1.2/entity/product/<id>
+        # превращаем в path для нашего HttpClient
+        base = self.http.base_url.rstrip("/")
+        if href.startswith(base):
+            path = href[len(base):]
+        else:
+            # на всякий случай
+            path = href
+        return self.http.request("GET", path)
+
