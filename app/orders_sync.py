@@ -189,13 +189,16 @@ def main() -> None:
 
         # 4) complete → создаём Demand (идемпотентно по externalCode)
         if supplier_status == "complete":
-            if not ms.find_demand_by_external_code(ext_code):
-                demand_payload = build_ms_demand_payload(cfg, ms_order)
-                ms.create_demand(demand_payload)
-                demand_created += 1
-                log.info("ms_demand_created", order_id=oid, externalCode=ext_code)
+            if cfg.test_mode:
+                log.info("TEST_MODE_skip_ms_demand_create", order_id=oid, externalCode=ext_code)
             else:
-                log.info("ms_demand_exists", order_id=oid, externalCode=ext_code)
+                if not ms.find_demand_by_external_code(ext_code):
+                    demand_payload = build_ms_demand_payload(cfg, ms_order)
+                    ms.create_demand(demand_payload)
+                    demand_created += 1
+                    log.info("ms_demand_created", order_id=oid, externalCode=ext_code)
+                else:
+                    log.info("ms_demand_exists", order_id=oid, externalCode=ext_code)
 
     log.info("done",
              created=created, updated=updated, skipped_no_product=skipped_no_product,
