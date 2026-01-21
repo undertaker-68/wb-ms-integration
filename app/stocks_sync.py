@@ -20,6 +20,7 @@ def _calc_available_from_stock_by_store(row: Dict, store_id: str) -> int:
             return max(stock - reserve, 0)
     return 0
 
+
 def build_stocks_payload(ms: MSClient, ms_rows: List[Dict], store_id: str) -> Tuple[List[Dict], Dict[str, int]]:
     stats = {"total": 0, "sent": 0, "skipped_no_sku": 0, "product_fetch": 0}
     out: List[Dict] = []
@@ -42,7 +43,7 @@ def build_stocks_payload(ms: MSClient, ms_rows: List[Dict], store_id: str) -> Tu
             obj = ms.get_by_href(href)
             sku = (obj.get("article") or obj.get("code") or obj.get("externalCode") or "").strip()
             cache[href] = sku
-            _t.sleep(0.05)  # чтобы не словить 429
+            _t.sleep(0.05)  # троттлинг, чтобы не ловить 429
 
         if not sku:
             stats["skipped_no_sku"] += 1
@@ -53,6 +54,7 @@ def build_stocks_payload(ms: MSClient, ms_rows: List[Dict], store_id: str) -> Tu
         stats["sent"] += 1
 
     return out, stats
+
 
 def chunk(lst: List[Dict], n: int) -> List[List[Dict]]:
     return [lst[i:i + n] for i in range(0, len(lst), n)]
@@ -86,13 +88,9 @@ def main() -> None:
     if cfg.test_mode:
         log.info(
             "TEST_MODE_on_skip_wb_set_stocks",
-            extra={
-                "preview": stocks[:5],
-                "preview_count": min(5, len(stocks)),
-                "total": len(stocks),
-            },
+            extra={"preview": stocks[:5], "preview_count": min(5, len(stocks)), "total": len(stocks)},
         )
-        log.info("done_test", extra={"total": stats["total"], "prepared": stats["sent"]})
+        log.info("done_test", extra={"total": stats["total"], "prepared": stats["sent"], "product_fetch": stats["product_fetch"]})
         return
 
     total_batches = 0
@@ -108,6 +106,7 @@ def main() -> None:
             "total": stats["total"],
             "sent": stats["sent"],
             "skipped_no_sku": stats["skipped_no_sku"],
+            "product_fetch": stats["product_fetch"],
         },
     )
 
