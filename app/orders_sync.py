@@ -198,7 +198,7 @@ def main() -> None:
             log.warning("skip_no_article", extra={"order_id": order_uid})
             continue
 
-        product = ms.find_product_by_article(article)
+        product = product_by_article.get(article)
         if not product:
             skipped_no_product += 1
             log.warning("skip_no_ms_product", extra={"order_id": order_uid, "article": article})
