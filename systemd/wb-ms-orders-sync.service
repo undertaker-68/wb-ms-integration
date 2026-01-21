@@ -1,0 +1,9 @@
+[Unit]
+Description=WB->MS orders sync (WB to MS)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/wb_ms_integration
+EnvironmentFile=/opt/wb_ms_integration/.env
+ExecStart=/opt/wb_ms_integration/venv/bin/python -m app.orders_sync
