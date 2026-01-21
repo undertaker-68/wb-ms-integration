@@ -9,17 +9,19 @@ from .wb_client import WBClient
 
 log = logging.getLogger("stocks_sync")
 
+
 def _calc_available(row: Dict) -> int:
     stock = int(row.get("stock", 0) or 0)
     reserve = int(row.get("reserve", 0) or 0)
     avail = stock - reserve
     return max(avail, 0)
 
+
 def build_stocks_payload(ms_rows: List[Dict]) -> Tuple[List[Dict], Dict[str, int]]:
     """
     Возвращает:
-      - stocks payload для WB: [{"sku": "...", "amount": n}, ...]
-      - статистику по пропускам/ошибкам
+      - payload для WB: [{"sku": "...", "amount": n}, ...]
+      - stats
     """
     stats = {"total": 0, "sent": 0, "skipped_no_sku": 0}
     out: List[Dict] = []
@@ -27,8 +29,6 @@ def build_stocks_payload(ms_rows: List[Dict]) -> Tuple[List[Dict], Dict[str, int
     for r in ms_rows:
         stats["total"] += 1
 
-        # В stock report обычно есть product/article/code — но структура зависит от МС.
-        # Берём "article" если есть, иначе code, иначе externalCode.
         sku = (r.get("article") or r.get("code") or r.get("externalCode") or "").strip()
         if not sku:
             stats["skipped_no_sku"] += 1
@@ -39,8 +39,10 @@ def build_stocks_payload(ms_rows: List[Dict]) -> Tuple[List[Dict], Dict[str, int
 
     return out, stats
 
+
 def chunk(lst: List[Dict], n: int) -> List[List[Dict]]:
-    return [lst[i:i+n] for i in range(0, len(lst), n)]
+    return [lst[i:i + n] for i in range(0, len(lst), n)]
+
 
 def main() -> None:
     cfg = load_config()
@@ -53,7 +55,7 @@ def main() -> None:
     )
     wb_http = HttpClient(
         cfg.wb_base_url,
-        headers={"Authorization": cfg.wb_token},  # HeaderApiKey (в доке), на практике обычно Authorization
+        headers={"Authorization": cfg.wb_token},
         timeout=cfg.http_timeout_sec,
     )
 
@@ -70,21 +72,31 @@ def main() -> None:
     if cfg.test_mode:
         log.info(
             "TEST_MODE_on_skip_wb_set_stocks",
-            preview=stocks[:5],
-            preview_count=min(5, len(stocks)),
-            total=len(stocks),
+            extra={
+                "preview": stocks[:5],
+                "preview_count": min(5, len(stocks)),
+                "total": len(stocks),
+            },
         )
-        log.info("done_test", total=stats["total"], prepared=stats["sent"])
+        log.info("done_test", extra={"total": stats["total"], "prepared": stats["sent"]})
         return
 
-    # WB лимиты могут отличаться — отправляем кусками.
     total_batches = 0
     for part in chunk(stocks, 1000):
         total_batches += 1
         wb.set_stocks(cfg.wb_warehouse_id, part)
         log.info("batch_sent", extra={"batch": total_batches, "batch_size": len(part)})
 
-    log.info("done", extra={"batches": total_batches, "total": stats["total"], "sent": stats["sent"], "skipped_no_sku": stats["skipped_no_sku"]})
+    log.info(
+        "done",
+        extra={
+            "batches": total_batches,
+            "total": stats["total"],
+            "sent": stats["sent"],
+            "skipped_no_sku": stats["skipped_no_sku"],
+        },
+    )
+
 
 if __name__ == "__main__":
     main()
