@@ -4,12 +4,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# в Config:
-test_mode: bool
-
-# в load_config():
-test_mode=_opt("TEST_MODE", "0") == "1",
-
 def _must(name: str) -> str:
     v = os.getenv(name)
     if not v:
@@ -41,6 +35,8 @@ class Config:
     wb_token: str
     wb_warehouse_id: int
 
+    test_mode: bool
+
     # runtime
     log_level: str
     http_timeout_sec: int
@@ -64,4 +60,5 @@ def load_config() -> Config:
         wb_warehouse_id=int(_must("WB_WAREHOUSE_ID")),
         log_level=_opt("LOG_LEVEL", "INFO"),
         http_timeout_sec=int(_opt("HTTP_TIMEOUT_SEC", "30")),
+        test_mode=_opt("TEST_MODE", "0") == "1",
     )
