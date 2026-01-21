@@ -179,6 +179,7 @@ def main() -> None:
                     "ms_order_created",
                     extra={"order_id": order_uid, "ms_id": ms_order.get("id"), "article": article,
                     "supplierStatus": supplier_status, "wbStatus": wb_status
+                          }
                 )
 
         # 3) Отмена → снимаем резерв (упрощённо: ставим reserve=0 на позиции, если надо — сделаем точнее)
