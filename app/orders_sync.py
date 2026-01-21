@@ -88,7 +88,7 @@ def main() -> None:
 
     # 1) Берём новые + “последние 30 дней” (у WB /orders без dateFrom по умолчанию 30 дней) :contentReference[oaicite:4]{index=4}
     new_orders = wb.get_new_orders()
-    log.info("wb_new_orders_loaded", count=len(new_orders))
+    log.info("wb_new_orders_loaded", extra={"count": len(new_orders)})
 
     # дополнительно подберём активные из /orders (если хочешь — можно убрать)
     # Здесь без фильтра по дате, просто “как WB отдаёт”
@@ -110,7 +110,7 @@ def main() -> None:
             all_orders_by_id[int(o["id"])] = o
     all_orders = list(all_orders_by_id.values())
 
-    log.info("wb_orders_total", count=len(all_orders))
+    log.info("wb_orders_total", extra={"count": len(all_orders)})
 
     # 2) Тянем статусы пачкой
     ids = [int(o["id"]) for o in all_orders if "id" in o]
@@ -136,7 +136,7 @@ def main() -> None:
         product = ms.find_product_by_article(article)
         if not product:
             skipped_no_product += 1
-            log.warning("skip_no_ms_product", order_id=oid, article=article)
+            log.warning("skip_no_ms_product", extra={"order_id": oid, "article": article})
             continue
 
         existing = ms.find_customer_order_by_external_code(ext_code)
@@ -145,7 +145,7 @@ def main() -> None:
         if existing:
             ms_id = existing["id"]
             if cfg.test_mode:
-                log.info("TEST_MODE_skip_ms_order_update", order_id=oid, ms_id=ms_id, article=article)
+                log.info("TEST_MODE_skip_ms_order_update", extra={"order_id": oid, "ms_id": ms_id, "article": article})
                 ms_order = existing
                 updated += 1
             else:
@@ -153,14 +153,14 @@ def main() -> None:
                 updated += 1
                 log.info(
                     "ms_order_updated",
-                    order_id=oid, ms_id=ms_id, article=article,
-                    supplierStatus=supplier_status, wbStatus=wb_status
+                    extra={"order_id": oid,"ms_id": ms_id, "article": article,
+                    "supplierStatus": supplier_status, "wbStatus": wb_status}
                 )
                 ms_order = existing
         else:
             if cfg.test_mode:
                 created += 1
-                log.info("TEST_MODE_skip_ms_order_create", order_id=oid, article=article, payload_preview=payload)
+                log.info("TEST_MODE_skip_ms_order_create", extra={"order_id": oid, "article": article, "payload_preview": payload)
                 # фейковый объект, чтобы ниже работала логика demand
                 ms_order = {
                     "id": "TEST",
@@ -176,29 +176,29 @@ def main() -> None:
                 created += 1
                 log.info(
                     "ms_order_created",
-                    order_id=oid, ms_id=ms_order.get("id"), article=article,
-                    supplierStatus=supplier_status, wbStatus=wb_status
+                    extra={"order_id": oid, "ms_id": ms_order.get("id"), "article": article,
+                    "supplierStatus": supplier_status, "wbStatus": wb_status
                 )
 
         # 3) Отмена → снимаем резерв (упрощённо: ставим reserve=0 на позиции, если надо — сделаем точнее)
         if supplier_status == "cancel" or wb_status == "canceled":
             cancelled += 1
             # Здесь можно доработать: получить позиции заказа и обновить reserve=0.
-            log.info("order_cancelled_seen", order_id=oid, ms_id=ms_order.get("id"))
+            log.info("order_cancelled_seen", extra={"order_id": oid, "ms_id": ms_order.get("id"))
             continue
 
         # 4) complete → создаём Demand (идемпотентно по externalCode)
         if supplier_status == "complete":
             if cfg.test_mode:
-                log.info("TEST_MODE_skip_ms_demand_create", order_id=oid, externalCode=ext_code)
+                log.info("TEST_MODE_skip_ms_demand_create", extra={"order_id": oid, "externalCode": ext_code)
             else:
                 if not ms.find_demand_by_external_code(ext_code):
                     demand_payload = build_ms_demand_payload(cfg, ms_order)
                     ms.create_demand(demand_payload)
                     demand_created += 1
-                    log.info("ms_demand_created", order_id=oid, externalCode=ext_code)
+                    log.info("ms_demand_created", extra={"order_id": oid, "externalCode": ext_code)
                 else:
-                    log.info("ms_demand_exists", order_id=oid, externalCode=ext_code)
+                    log.info("ms_demand_exists", extra={"order_id": oid, "externalCode": ext_code)
 
     log.info("done",
              created=created, updated=updated, skipped_no_product=skipped_no_product,
