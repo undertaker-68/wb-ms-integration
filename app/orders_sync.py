@@ -186,21 +186,21 @@ def main() -> None:
         if supplier_status == "cancel" or wb_status == "canceled":
             cancelled += 1
             # Здесь можно доработать: получить позиции заказа и обновить reserve=0.
-            log.info("order_cancelled_seen", extra={"order_id": order_uid, "ms_id": ms_order.get("id"))
+            log.info("order_cancelled_seen", extra={"order_id": order_uid, "ms_id": ms_order.get("id")})
             continue
 
         # 4) complete → создаём Demand (идемпотентно по externalCode)
         if supplier_status == "complete":
             if cfg.test_mode:
-                log.info("TEST_MODE_skip_ms_demand_create", extra={"order_id": order_uid, "externalCode": ext_code)
+                log.info("TEST_MODE_skip_ms_demand_create", extra={"order_id": order_uid, "externalCode": ext_code})
             else:
                 if not ms.find_demand_by_external_code(ext_code):
                     demand_payload = build_ms_demand_payload(cfg, ms_order)
                     ms.create_demand(demand_payload)
                     demand_created += 1
-                    log.info("ms_demand_created", extra={"order_id": order_uid, "externalCode": ext_code)
+                    log.info("ms_demand_created", extra={"order_id": order_uid, "externalCode": ext_code})
                 else:
-                    log.info("ms_demand_exists", extra={"order_id": order_uid, "externalCode": ext_code)
+                    log.info("ms_demand_exists", extra={"order_id": order_uid, "externalCode": ext_code})
 
     log.info("done",
              created=created, updated=updated, skipped_no_product=skipped_no_product,
