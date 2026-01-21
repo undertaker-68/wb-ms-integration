@@ -13,10 +13,10 @@ class HttpClient:
         self.timeout = timeout
         self.session = requests.Session()
 
-    def request(self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
-                json_body: Optional[Dict[str, Any]] = None) -> Any:
+        def request(self, method: str, path: str, *, params=None, json_body=None):
         url = f"{self.base_url}{path}"
         t0 = time.time()
+
         resp = self.session.request(
             method=method,
             url=url,
@@ -25,31 +25,37 @@ class HttpClient:
             json=json_body,
             timeout=self.timeout,
         )
+
         dt_ms = int((time.time() - t0) * 1000)
 
-        log.info("http_request", extra={
-            "method": method,
-            "url": url,
-            "status": resp.status_code,
-            "ms": dt_ms,
-        })
+        log.info(
+            "http_request",
+            extra={
+                "method": method,
+                "url": url,
+                "status": resp.status_code,
+                "ms": dt_ms,
+            },
+        )
 
         if resp.status_code >= 400:
-            # максимум информации в лог
             try:
                 body = resp.json()
             except Exception:
                 body = resp.text[:2000]
-           log.error("http_error", extra={
-            "method": method,
-            "url": url,
-            "status": resp.status_code,
-            "body": body,
-        })
+
+            log.error(
+                "http_error",
+                extra={
+                    "method": method,
+                    "url": url,
+                    "status": resp.status_code,
+                    "body": body,
+                },
+            )
             resp.raise_for_status()
 
-        if resp.status_code == 204:
+        if resp.status_code == 204 or not resp.text:
             return None
-        if not resp.text:
-            return None
+
         return resp.json()
