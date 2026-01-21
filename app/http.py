@@ -27,8 +27,12 @@ class HttpClient:
         )
         dt_ms = int((time.time() - t0) * 1000)
 
-        log.info("http_request",
-                 method=method, url=url, status=resp.status_code, ms=dt_ms)
+        log.info("http_request", extra={
+            "method": method,
+            "url": url,
+            "status": resp.status_code,
+            "ms": dt_ms,
+        })
 
         if resp.status_code >= 400:
             # максимум информации в лог
@@ -36,7 +40,12 @@ class HttpClient:
                 body = resp.json()
             except Exception:
                 body = resp.text[:2000]
-            log.error("http_error", method=method, url=url, status=resp.status_code, body=body)
+           log.error("http_error", extra={
+            "method": method,
+            "url": url,
+            "status": resp.status_code,
+            "body": body,
+        })
             resp.raise_for_status()
 
         if resp.status_code == 204:
