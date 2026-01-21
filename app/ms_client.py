@@ -57,3 +57,7 @@ class MSClient:
 
     def create_demand(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self.http.request("POST", "/entity/demand", json_body=payload)
+
+    def search_products(self, text: str, limit: int = 1000) -> List[Dict[str, Any]]:
+        data = self.http.request("GET", "/entity/product", params={"search": text, "limit": limit})
+        return data.get("rows", []) if isinstance(data, dict) else []
