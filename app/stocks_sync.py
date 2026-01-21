@@ -67,6 +67,16 @@ def main() -> None:
 
     log.info("prepared", **stats)
 
+    if cfg.test_mode:
+        log.info(
+            "TEST_MODE_on_skip_wb_set_stocks",
+            preview=stocks[:5],
+            preview_count=min(5, len(stocks)),
+            total=len(stocks),
+        )
+        log.info("done_test", total=stats["total"], prepared=stats["sent"])
+        return
+
     # WB лимиты могут отличаться — отправляем кусками.
     total_batches = 0
     for part in chunk(stocks, 1000):
