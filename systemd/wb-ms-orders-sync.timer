@@ -1,0 +1,10 @@
+[Unit]
+Description=Run WB orders sync every 2 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+Unit=wb-ms-orders-sync.service
+
+[Install]
+WantedBy=timers.target
