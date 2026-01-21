@@ -17,19 +17,50 @@ def _calc_available(row: Dict) -> int:
     return max(avail, 0)
 
 
-def build_stocks_payload(ms_rows: List[Dict]) -> Tuple[List[Dict], Dict[str, int]]:
+def build_stocks_payload(ms: MSClient, ms_rows: List[Dict]) -> Tuple[List[Dict], Dict[str, int]]:
     """
-    Возвращает:
-      - payload для WB: [{"sku": "...", "amount": n}, ...]
-      - stats
+    Достаём sku (артикул) из ассортимента:
+    - если в строке уже есть article/code/externalCode — используем
+    - иначе берём row["assortment"]["meta"]["href"] и тянем продукт/вариант, вытаскиваем article/code
+    Кэшируем по href, чтобы не дергать МС повторно.
     """
-    stats = {"total": 0, "sent": 0, "skipped_no_sku": 0}
+    stats = {"total": 0, "sent": 0, "skipped_no_sku": 0, "assortment_fetch": 0}
     out: List[Dict] = []
+    cache: Dict[str, str] = {}
+
+    import time as _t
+
+    def extract_inline(r: Dict) -> str:
+        return (r.get("article") or r.get("code") or r.get("externalCode") or "").strip()
+
+    def extract_from_assortment(r: Dict) -> str:
+        assort = r.get("assortment") or r.get("product") or {}
+        meta = assort.get("meta") or {}
+        href = meta.get("href") or ""
+        if not href:
+            return ""
+
+        if href in cache:
+            return cache[href]
+
+        # тянем сущность (product / variant / bundle)
+        stats["assortment_fetch"] += 1
+        obj = ms.get_by_href(href)
+
+        sku = (obj.get("article") or obj.get("code") or obj.get("externalCode") or "").strip()
+        cache[href] = sku
+
+        # легкий троттлинг, чтобы не ловить 429 на больших списках
+        _t.sleep(0.08)
+        return sku
 
     for r in ms_rows:
         stats["total"] += 1
 
-        sku = (r.get("article") or r.get("code") or r.get("externalCode") or "").strip()
+        sku = extract_inline(r)
+        if not sku:
+            sku = extract_from_assortment(r)
+
         if not sku:
             stats["skipped_no_sku"] += 1
             continue
