@@ -160,7 +160,7 @@ def main() -> None:
         else:
             if cfg.test_mode:
                 created += 1
-                log.info("TEST_MODE_skip_ms_order_create", extra={"order_id": oid, "article": article, "payload_preview": payload)
+                log.info("TEST_MODE_skip_ms_order_create", extra={"order_id": oid, "article": article, "payload_preview": payload})
                 # фейковый объект, чтобы ниже работала логика demand
                 ms_order = {
                     "id": "TEST",
