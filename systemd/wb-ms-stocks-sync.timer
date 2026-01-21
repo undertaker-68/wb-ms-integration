@@ -1,0 +1,10 @@
+[Unit]
+Description=Run WB stocks sync every 8 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=8min
+Unit=wb-ms-stocks-sync.service
+
+[Install]
+WantedBy=timers.target
