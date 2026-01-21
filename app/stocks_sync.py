@@ -95,7 +95,7 @@ def main() -> None:
     log.info("start", extra={"warehouse_id": cfg.wb_warehouse_id, "ms_store_id": cfg.ms_store_id_wb})
 
     rows = ms.report_stock_by_store(cfg.ms_store_id_wb)
-    stocks, stats = build_stocks_payload(rows)
+    stocks, stats = build_stocks_payload(ms, rows)
 
     log.info("prepared", extra=stats)
 
