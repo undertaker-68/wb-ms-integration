@@ -26,12 +26,13 @@ class WBClient:
             params["dateTo"] = date_to
         return self.http.request("GET", "/api/v3/orders", params=params)
 
-    def get_orders_status(self, order_ids: List[int]) -> List[Dict[str, Any]]:
-        if not order_ids:
-            return []
-        data = self.http.request("POST", "/api/v3/orders/status", json_body={"orders": order_ids})
-        # по доке это массив объектов
-        return data if isinstance(data, list) else []
+    def get_orders_status(self, ids):
+        # WB ждёт именно список чисел в поле orders
+        payload = {"orders": [int(x) for x in ids]}
+        data = self.http.request("POST", "/api/v3/orders/status", json_body=payload)
+        if isinstance(data, dict):
+            return data.get("orders", []) or []
+        return []
 
     def set_stocks(self, warehouse_id: int, stocks: List[Dict[str, Any]]) -> Any:
         """
