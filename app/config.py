@@ -4,14 +4,33 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def _must(name: str) -> str:
     v = os.getenv(name)
     if not v:
         raise RuntimeError(f"Missing env var: {name}")
     return v
 
+
 def _opt(name: str, default: str = "") -> str:
     return os.getenv(name, default)
+
+
+def _bool(name: str, default: bool = False) -> bool:
+    """
+    Accepts: 1/0, true/false, yes/no, on/off (case-insensitive).
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    v = raw.strip().lower()
+    if v in {"1", "true", "yes", "y", "on"}:
+        return True
+    if v in {"0", "false", "no", "n", "off", ""}:
+        return False
+    # Fallback: non-empty => True
+    return True
+
 
 @dataclass(frozen=True)
 class Config:
@@ -41,6 +60,7 @@ class Config:
     log_level: str
     http_timeout_sec: int
 
+
 def load_config() -> Config:
     return Config(
         ms_base_url=_opt("MS_BASE_URL", "https://api.moysklad.ru/api/remap/1.2"),
@@ -60,5 +80,5 @@ def load_config() -> Config:
         wb_warehouse_id=int(_must("WB_WAREHOUSE_ID")),
         log_level=_opt("LOG_LEVEL", "INFO"),
         http_timeout_sec=int(_opt("HTTP_TIMEOUT_SEC", "30")),
-        test_mode=_opt("TEST_MODE", "0") == "1",
+        test_mode=_bool("TEST_MODE", default=False),
     )
