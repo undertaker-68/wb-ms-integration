@@ -177,7 +177,14 @@ def _update_planned_date_if_needed(
         return
 
     current = (order.get("deliveryPlannedMoment") or "").strip()
-    if current == new_val:
+
+    # normalize MS current like 'YYYY-MM-DD HH:MM:SS.000' -> 'YYYY-MM-DD HH:MM:SS'
+    if len(current) >= 19:
+        current_cmp = current[:19]
+    else:
+        current_cmp = current
+
+    if current_cmp == new_val:
         return
 
     ms.update_customer_order_date(order["id"], new_val)
