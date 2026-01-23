@@ -222,6 +222,7 @@ def _ensure_move(
         "externalCode": external_code,
         "organization": order["organization"],
         "comment": order.get("comment") or "",
+        "customerOrder": {"meta": order["meta"]},
         "sourceStore": {"meta": {"type": "store", "href": f"{cfg.ms_base_url}/entity/store/{fbw_cfg.ms_store_source_id}"}},
         "targetStore": {"meta": {"type": "store", "href": f"{cfg.ms_base_url}/entity/store/{fbw_cfg.ms_store_wb_id}"}},
         "state": {"meta": {"type": "state", "href": f"{cfg.ms_base_url}/entity/move/metadata/states/{fbw_cfg.ms_status_move_id}"}},
