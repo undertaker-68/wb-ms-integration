@@ -95,7 +95,7 @@ def main() -> None:
     ms_created_file = os.getenv("MS_CREATED_FILE", "/root/wb_ms_integration/ms_created_orders.json")
 
     # Pending WB orders that already have a CustomerOrder in MS, but not yet a Demand (отгрузка).
-    # Мы обновляем их статус на каждом прогоне и создаём Demand, когда WB отдаёт supplierStatus=complete.
+    # Мы обновляем их статус на каждом прогоне и создаём Demand, когда WB отдаёт wbStatus=sorted (Отсортировано).
     pending_file = os.getenv("PENDING_FILE", "/root/wb_ms_integration/pending_orders.json")
 
     # How far back to look when listing WB orders (for bootstrap/new detection only).
@@ -233,7 +233,7 @@ def main() -> None:
     pending_touched = 0
     pending_closed = 0
 
-    # 1) Refresh pending orders: if complete -> create demand and drop from pending.
+    # 1) Refresh pending orders: if sorted -> create demand and drop from pending.
     # We do it first so even without "new" orders we can still create shipments.
     if pending:
         for ext_code in sorted(pending):
@@ -253,10 +253,10 @@ def main() -> None:
                 log.info("pending_cancelled_drop", extra={"order_id": str(ext_code)})
                 continue
 
-            # Complete: ensure Demand exists
-            if supplier_status == "complete":
+            # Sorted: ensure Demand exists (Отсортировано)
+            if wb_status == "sorted":
                 if cfg.test_mode:
-                    log.info("TEST_MODE_pending_complete_would_create_demand", extra={"order_id": str(ext_code)})
+                    log.info("TEST_MODE_pending_sorted_would_create_demand", extra={"order_id": str(ext_code)})
                     pending_closed += 1
                     pending.discard(str(ext_code))
                     continue
@@ -337,8 +337,8 @@ def main() -> None:
             ms_created.add(ext_code)
             save_set(ms_created_file, ms_created)
 
-        # complete -> demand, иначе добавляем в pending (будем обновлять статус до complete)
-        if supplier_status == "complete":
+        # wbStatus=sorted -> demand, иначе добавляем в pending
+        if wb_status == "sorted":
             if cfg.test_mode:
                 log.info("TEST_MODE_skip_ms_demand_create", extra={"order_id": num, "externalCode": ext_code})
             else:
@@ -350,7 +350,7 @@ def main() -> None:
                 else:
                     log.info("ms_demand_exists", extra={"order_id": num, "externalCode": ext_code})
         else:
-            # Не complete: будем проверять на следующих прогонах.
+            # Не sorted: будем проверять на следующих прогонах.
             # В тест-режиме pending не пишем, чтобы не «запомнить» фиктивные заказы.
             if not cfg.test_mode:
                 pending.add(ext_code)
