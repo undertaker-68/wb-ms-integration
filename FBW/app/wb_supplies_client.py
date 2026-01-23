@@ -12,14 +12,20 @@ class WBSuppliesClient:
     def __init__(self, http: HttpClient):
         self.http = http
 
-    def list_supplies(self, date_from: datetime, *, limit: int = 1000) -> List[Dict[str, Any]]:
-        # WB expects RFC3339/ISO string
+    def list_supplies(self, date_from):
+        url = "/api/v1/supplies"
         payload = {
             "dateFrom": date_from.isoformat(),
-            "limit": limit,
+            "limit": 1000
         }
-        data = self.http.request("POST", "/api/v1/supplies", json_body=payload)
-        return (data or {}).get("supplies", [])
+        data = self.http.request("POST", url, json_body=payload)
+
+        # WB иногда возвращает список, а иногда объект с ключом supplies
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get("supplies", [])
+        return []
 
     def get_supply(self, supply_id: int | str) -> Dict[str, Any]:
         return self.http.request("GET", f"/api/v1/supplies/{supply_id}")
