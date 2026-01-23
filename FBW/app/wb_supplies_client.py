@@ -1,32 +1,29 @@
-import requests
-from datetime import datetime, timedelta
-from .config_fbw import WB_SUPPLIES_BASE_URL, WB_SUPPLIES_TOKEN
+from __future__ import annotations
 
-HEADERS = {
-    "Authorization": WB_SUPPLIES_TOKEN,
-    "Content-Type": "application/json"
-}
+from datetime import datetime
+from typing import Any, Dict, List
+
+from app.http import HttpClient
+
 
 class WBSuppliesClient:
+    """WB FBW Supplies API client (supplies-api.wildberries.ru)."""
 
-    def list_supplies(self, date_from):
-        url = f"{WB_SUPPLIES_BASE_URL}/api/v1/supplies"
+    def __init__(self, http: HttpClient):
+        self.http = http
+
+    def list_supplies(self, date_from: datetime, *, limit: int = 1000) -> List[Dict[str, Any]]:
+        # WB expects RFC3339/ISO string
         payload = {
             "dateFrom": date_from.isoformat(),
-            "limit": 1000
+            "limit": limit,
         }
-        r = requests.post(url, json=payload, headers=HEADERS, timeout=30)
-        r.raise_for_status()
-        return r.json().get("supplies", [])
+        data = self.http.request("POST", "/api/v1/supplies", json_body=payload)
+        return (data or {}).get("supplies", [])
 
-    def get_supply(self, supply_id):
-        url = f"{WB_SUPPLIES_BASE_URL}/api/v1/supplies/{supply_id}"
-        r = requests.get(url, headers=HEADERS, timeout=30)
-        r.raise_for_status()
-        return r.json()
+    def get_supply(self, supply_id: int | str) -> Dict[str, Any]:
+        return self.http.request("GET", f"/api/v1/supplies/{supply_id}")
 
-    def get_goods(self, supply_id):
-        url = f"{WB_SUPPLIES_BASE_URL}/api/v1/supplies/{supply_id}/goods"
-        r = requests.get(url, headers=HEADERS, timeout=30)
-        r.raise_for_status()
-        return r.json().get("goods", [])
+    def get_goods(self, supply_id: int | str) -> List[Dict[str, Any]]:
+        data = self.http.request("GET", f"/api/v1/supplies/{supply_id}/goods")
+        return (data or {}).get("goods", [])
