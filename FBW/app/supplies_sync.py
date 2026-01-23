@@ -24,38 +24,31 @@ def _parse_dt(s: str) -> Optional[datetime]:
     except Exception:
         return None
 
-
 def _normalize_moment(raw: str, tz_offset: str) -> str:
+    """
+    MS ожидает 'YYYY-MM-DD HH:MM:SS' (без таймзоны).
+    WB приходит как '2026-02-12T00:00:00+03:00' или просто дата.
+    """
     s = (raw or "").strip()
     if not s:
-        return s
+        return ""
 
-    # date-only -> add time + offset
+    # date-only -> datetime midnight (no tz)
     if len(s) == 10 and s[4] == "-" and s[7] == "-":
-        s = f"{s}T00:00:00{tz_offset}"
+        return f"{s} 00:00:00"
 
-    # Convert trailing Z to +0000
-    if s.endswith("Z"):
-        s = s[:-1] + "+0000"
-
-    # If has timezone like +03:00 or -05:30 -> remove colon -> +0300 / -0530
-    # Works both for WB and any ISO strings
-    if len(s) >= 6 and (s[-6] in ["+", "-"]) and s[-3] == ":":
-        s = s[:-3] + s[-2:]
-
-    # If has offset like +03 or -05 (rare) -> expand
-    if len(s) >= 3 and (s[-3] in ["+", "-"]) and s[-2:].isdigit():
-        s = s + "00"
-
-    # If no offset but has T, append tz_offset formatted like +0300
-    if "T" in s and (("+" not in s[-6:]) and ("-" not in s[-6:])) and not s.endswith("+0000"):
-        # tz_offset may be "+03:00" from config, normalize to "+0300"
-        off = tz_offset
-        if len(off) == 6 and off[3] == ":":
-            off = off[:3] + off[4:]
-        s = s + off
-
-    return s
+    # ISO datetime -> parse -> format MS
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        # MS формат без таймзоны
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        # на всякий — если вдруг пришло 'YYYY-MM-DDTHH:MM:SS' без offset
+        if "T" in s:
+            s2 = s.replace("T", " ")
+            if len(s2) >= 19:
+                return s2[:19]
+        return ""
 
 def _load_state(path: str) -> Dict[str, Any]:
     if not os.path.exists(path):
