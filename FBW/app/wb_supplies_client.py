@@ -30,6 +30,13 @@ class WBSuppliesClient:
     def get_supply(self, supply_id: int | str) -> Dict[str, Any]:
         return self.http.request("GET", f"/api/v1/supplies/{supply_id}")
 
-    def get_goods(self, supply_id: int | str) -> List[Dict[str, Any]]:
-        data = self.http.request("GET", f"/api/v1/supplies/{supply_id}/goods")
-        return (data or {}).get("goods", [])
+    def get_goods(self, supply_id):
+        url = f"/api/v1/supplies/{supply_id}/goods"
+        data = self.http.request("GET", url)
+
+        # WB возвращает список или объект {goods: [...]}
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get("goods", [])
+        return []
