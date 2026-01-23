@@ -30,20 +30,32 @@ def _normalize_moment(raw: str, tz_offset: str) -> str:
     if not s:
         return s
 
-    # date-only
+    # date-only -> add time + offset
     if len(s) == 10 and s[4] == "-" and s[7] == "-":
-        return f"{s}T00:00:00{tz_offset}"
+        s = f"{s}T00:00:00{tz_offset}"
 
-    # datetime with 'Z' or explicit offset
-    if s.endswith("Z") or "+" in s[-6:] or "-" in s[-6:]:
-        return s.replace("Z", "+00:00")
+    # Convert trailing Z to +0000
+    if s.endswith("Z"):
+        s = s[:-1] + "+0000"
 
-    # datetime without offset
-    if "T" in s:
-        return f"{s}{tz_offset}"
+    # If has timezone like +03:00 or -05:30 -> remove colon -> +0300 / -0530
+    # Works both for WB and any ISO strings
+    if len(s) >= 6 and (s[-6] in ["+", "-"]) and s[-3] == ":":
+        s = s[:-3] + s[-2:]
+
+    # If has offset like +03 or -05 (rare) -> expand
+    if len(s) >= 3 and (s[-3] in ["+", "-"]) and s[-2:].isdigit():
+        s = s + "00"
+
+    # If no offset but has T, append tz_offset formatted like +0300
+    if "T" in s and (("+" not in s[-6:]) and ("-" not in s[-6:])) and not s.endswith("+0000"):
+        # tz_offset may be "+03:00" from config, normalize to "+0300"
+        off = tz_offset
+        if len(off) == 6 and off[3] == ":":
+            off = off[:3] + off[4:]
+        s = s + off
 
     return s
-
 
 def _load_state(path: str) -> Dict[str, Any]:
     if not os.path.exists(path):
