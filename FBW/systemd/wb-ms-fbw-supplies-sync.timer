@@ -1,0 +1,9 @@
+[Unit]
+Description=Run FBW supplies sync every 2 hours
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=2h
+
+[Install]
+WantedBy=timers.target
