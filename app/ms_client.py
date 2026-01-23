@@ -160,6 +160,42 @@ class MSClient:
     def update_move(self, move_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self.http.request("PUT", f"/entity/move/{move_id}", json_body=payload)
 
+    def find_assortment_by_article_vendorcode(self, article: str):
+        """
+        FBW: ищем по article сначала product, потом variant.
+        Fallback: code (product/variant).
+        Возвращает product/variant (assortment) с meta.
+        """
+        article = (article or "").strip()
+        if not article:
+            return None
+
+        # product.article
+        data = self.http.request("GET", "/entity/product", params={"filter": f"article={article}"})
+        rows = data.get("rows", []) if isinstance(data, dict) else []
+        if rows:
+            return rows[0]
+
+        # variant.article
+        data = self.http.request("GET", "/entity/variant", params={"filter": f"article={article}"})
+        rows = data.get("rows", []) if isinstance(data, dict) else []
+        if rows:
+            return rows[0]
+
+        # product.code
+        data = self.http.request("GET", "/entity/product", params={"filter": f"code={article}"})
+        rows = data.get("rows", []) if isinstance(data, dict) else []
+        if rows:
+            return rows[0]
+
+        # variant.code
+        data = self.http.request("GET", "/entity/variant", params={"filter": f"code={article}"})
+        rows = data.get("rows", []) if isinstance(data, dict) else []
+        if rows:
+            return rows[0]
+
+        return None
+
     # ---------------------------
     # Applicable (проведение)
     # ---------------------------
