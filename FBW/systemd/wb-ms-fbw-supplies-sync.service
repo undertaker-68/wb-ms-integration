@@ -1,0 +1,8 @@
+[Unit]
+Description=WB → MS FBW supplies sync
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/wb-ms-integration
+ExecStart=/usr/bin/python3 -m FBW.app.supplies_sync
