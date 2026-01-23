@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -13,8 +12,18 @@ from app.ms_client import MSClient
 from .config_fbw import load_fbw_config
 from .wb_supplies_client import WBSuppliesClient
 
-
 log = logging.getLogger("fbw_supplies_sync")
+
+
+def _parse_dt(s: str) -> Optional[datetime]:
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        # WB приходит как 2026-01-23T11:28:45+03:00 -> fromisoformat ок
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 
 def _normalize_moment(raw: str, tz_offset: str) -> str:
@@ -114,7 +123,10 @@ def _ensure_customerorder(
         positions.append(ms.make_position(product, qty))
 
     if not positions:
-        log.warning("skip_create_empty_positions", extra={"supply_id": supply_id, "number": number, "not_found": not_found})
+        log.warning(
+            "skip_create_empty_positions",
+            extra={"supply_id": supply_id, "number": number, "not_found": not_found},
+        )
         return None
 
     planned = _normalize_moment(plan_date_raw or "", fbw_cfg.fbw_timezone_offset)
@@ -124,6 +136,7 @@ def _ensure_customerorder(
         "externalCode": external_code,
         "organization": {"meta": {"type": "organization", "href": f"{cfg.ms_base_url}/entity/organization/{cfg.ms_org_id}"}},
         "agent": {"meta": {"type": "counterparty", "href": f"{cfg.ms_base_url}/entity/counterparty/{cfg.ms_agent_id_wb}"}},
+        # store в заказе — как в FBS (у тебя было wb store). Оставляю как было в файле.
         "store": {"meta": {"type": "store", "href": f"{cfg.ms_base_url}/entity/store/{cfg.ms_store_id_wb}"}},
         "salesChannel": {"meta": {"type": "saleschannel", "href": f"{cfg.ms_base_url}/entity/saleschannel/{fbw_cfg.ms_sales_channel_id_fbw}"}},
         "state": {"meta": {"type": "state", "href": f"{cfg.ms_base_url}/entity/customerorder/metadata/states/{fbw_cfg.ms_status_customerorder_id}"}},
@@ -134,7 +147,10 @@ def _ensure_customerorder(
         payload["deliveryPlannedMoment"] = planned
 
     created = ms.create_customer_order(payload)
-    log.info("customerorder_created", extra={"supply_id": supply_id, "number": number, "ms_id": created.get("id"), "not_found": not_found})
+    log.info(
+        "customerorder_created",
+        extra={"supply_id": supply_id, "number": number, "ms_id": created.get("id"), "not_found": not_found},
+    )
     return created
 
 
@@ -172,7 +188,6 @@ def _ensure_move(
     if existing:
         return existing
 
-    # Build positions (same as order) by re-resolving articles.
     positions = []
     for g in goods:
         article = _extract_article(g)
@@ -182,10 +197,7 @@ def _ensure_move(
         product = ms.find_product_by_article(article)
         if not product:
             continue
-        positions.append({
-            "quantity": qty,
-            "assortment": {"meta": product["meta"]},
-        })
+        positions.append({"quantity": qty, "assortment": {"meta": product["meta"]}})
 
     payload: Dict[str, Any] = {
         "name": order.get("name") or f"fbw-{number}",
@@ -201,7 +213,6 @@ def _ensure_move(
     created = ms.create_move(payload)
     log.info("move_created", extra={"supply_id": supply_id, "number": number, "ms_id": created.get("id")})
 
-    # Try to apply (conduct). If fails, keep as not applicable.
     ok = ms.try_apply_move(created["id"])
     if not ok:
         log.warning("move_apply_failed_keep_unapplied", extra={"move_id": created.get("id")})
@@ -287,28 +298,40 @@ def main() -> None:
         log.info("bootstrap_done_no_import", extra={"state_file": fbw_cfg.state_file})
         return
 
+    boot_at = _parse_dt(state["bootstrappedAt"]) or datetime.now(timezone.utc)
+
     date_from = datetime.now(timezone.utc) - timedelta(days=fbw_cfg.lookback_days)
     supplies = wb.list_supplies(date_from)
+
     supplies_by_id: Dict[str, Dict[str, Any]] = {}
     for s in supplies:
-        sid = s.get("id")
+        # WB returns supplyID, not id
+        sid = s.get("supplyID")
         if sid is None:
             continue
         supplies_by_id[str(sid)] = s
 
-    # Ensure orders for NEW supplies (not in state)
+    # Ensure orders for NEW supplies (created AFTER bootstrap, and not in state)
     for sid, s in supplies_by_id.items():
         if sid in state["supplies"]:
             continue
 
-        number = str(s.get("number") or "").strip()
+        created_dt = _parse_dt(str(s.get("createDate") or ""))
+        if created_dt and created_dt.astimezone(timezone.utc) <= boot_at:
+            continue  # skip old supplies
+
+        number = str(s.get("supplyID") or "").strip()  # номер в интерфейсе
         if not number:
             continue
 
         goods = wb.get_goods(sid)
 
-        # Try to detect destination warehouse name for comment suffix
-        dest_name = str(s.get("warehouseName") or s.get("warehouse") or s.get("destinationWarehouse") or "").strip()
+        dest_name = str(
+            s.get("warehouseName")
+            or s.get("warehouse")
+            or s.get("destinationWarehouse")
+            or ""
+        ).strip()
         plan_date_raw = str(s.get("supplyDate") or s.get("planDate") or "").strip()
 
         order = _ensure_customerorder(
@@ -335,14 +358,16 @@ def main() -> None:
     for sid, info in list(state["supplies"].items()):
         s = supplies_by_id.get(str(sid))
         if not s:
-            # not in lookback window anymore, skip
             continue
 
-        number = str(info.get("number") or s.get("number") or "").strip()
+        number = str(info.get("number") or s.get("supplyID") or "").strip()
         if not number:
             continue
 
-        order = ms.find_customer_order_by_name(f"fbw-{number}") or ms.find_customer_order_by_external_code(f"fbw-{number}")
+        order = (
+            ms.find_customer_order_by_name(f"fbw-{number}")
+            or ms.find_customer_order_by_external_code(f"fbw-{number}")
+        )
         if not order:
             continue
 
@@ -351,10 +376,15 @@ def main() -> None:
 
         # Update plan date while demand not created yet
         if not info.get("demand"):
-            _update_planned_date_if_needed(ms=ms, order=order, plan_date_raw=plan_date_raw, tz_offset=fbw_cfg.fbw_timezone_offset)
+            _update_planned_date_if_needed(
+                ms=ms,
+                order=order,
+                plan_date_raw=plan_date_raw,
+                tz_offset=fbw_cfg.fbw_timezone_offset,
+            )
 
-        # fetch goods only when needed (move/demand)
         goods: list[Dict[str, Any]] | None = None
+
         def _get_goods() -> list[Dict[str, Any]]:
             nonlocal goods
             if goods is None:
@@ -394,7 +424,7 @@ def main() -> None:
         state["supplies"][sid] = info
 
     _save_state(fbw_cfg.state_file, state)
-    log.info("done", extra={"state_file": fbw_cfg.state_file, "supplies": len(state.get('supplies', {}))})
+    log.info("done", extra={"state_file": fbw_cfg.state_file, "supplies": len(state.get("supplies", {}))})
 
 
 if __name__ == "__main__":
