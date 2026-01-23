@@ -20,17 +20,12 @@ def _parse_dt(s: str) -> Optional[datetime]:
     if not s:
         return None
     try:
-        # WB приходит как 2026-01-23T11:28:45+03:00 -> fromisoformat ок
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except Exception:
         return None
 
 
 def _normalize_moment(raw: str, tz_offset: str) -> str:
-    """Make WB 'plan date' acceptable for MS.
-
-    WB can return date-only or datetime without timezone; MS prefers ISO with offset.
-    """
     s = (raw or "").strip()
     if not s:
         return s
@@ -70,13 +65,8 @@ def _comment(number: str, dest: str) -> str:
 
 
 def _extract_article(wb_good: Dict[str, Any]) -> str:
-    # You said "в WB кажется тоже называется article". Keep fallback for real-life payloads.
-    return str(
-        wb_good.get("article")
-        or wb_good.get("vendorCode")
-        or wb_good.get("supplierArticle")
-        or ""
-    ).strip()
+    # В WB по твоему примеру нужное поле = vendorCode
+    return str(wb_good.get("vendorCode") or "").strip()
 
 
 def _extract_qty(wb_good: Dict[str, Any]) -> float:
@@ -109,6 +99,7 @@ def _ensure_customerorder(
 
     positions = []
     not_found: list[str] = []
+
     for g in goods:
         article = _extract_article(g)
         qty = _extract_qty(g)
@@ -122,10 +113,20 @@ def _ensure_customerorder(
 
         positions.append(ms.make_position(product, qty))
 
+    log.info(
+        "positions_result",
+        extra={
+            "supply_id": supply_id,
+            "number": number,
+            "positions": len(positions),
+            "not_found_sample": not_found[:20],
+        },
+    )
+
     if not positions:
         log.warning(
             "skip_create_empty_positions",
-            extra={"supply_id": supply_id, "number": number, "not_found": not_found},
+            extra={"supply_id": supply_id, "number": number, "not_found": not_found[:50]},
         )
         return None
 
@@ -134,12 +135,20 @@ def _ensure_customerorder(
     payload: Dict[str, Any] = {
         "name": name,
         "externalCode": external_code,
-        "organization": {"meta": {"type": "organization", "href": f"{cfg.ms_base_url}/entity/organization/{cfg.ms_org_id}"}},
-        "agent": {"meta": {"type": "counterparty", "href": f"{cfg.ms_base_url}/entity/counterparty/{cfg.ms_agent_id_wb}"}},
-        # store в заказе — как в FBS (у тебя было wb store). Оставляю как было в файле.
+        "organization": {
+            "meta": {"type": "organization", "href": f"{cfg.ms_base_url}/entity/organization/{cfg.ms_org_id}"}
+        },
+        "agent": {
+            "meta": {"type": "counterparty", "href": f"{cfg.ms_base_url}/entity/counterparty/{cfg.ms_agent_id_wb}"}
+        },
+        # store в заказе — как в FBS
         "store": {"meta": {"type": "store", "href": f"{cfg.ms_base_url}/entity/store/{cfg.ms_store_id_wb}"}},
-        "salesChannel": {"meta": {"type": "saleschannel", "href": f"{cfg.ms_base_url}/entity/saleschannel/{fbw_cfg.ms_sales_channel_id_fbw}"}},
-        "state": {"meta": {"type": "state", "href": f"{cfg.ms_base_url}/entity/customerorder/metadata/states/{fbw_cfg.ms_status_customerorder_id}"}},
+        "salesChannel": {
+            "meta": {"type": "saleschannel", "href": f"{cfg.ms_base_url}/entity/saleschannel/{fbw_cfg.ms_sales_channel_id_fbw}"}
+        },
+        "state": {
+            "meta": {"type": "state", "href": f"{cfg.ms_base_url}/entity/customerorder/metadata/states/{fbw_cfg.ms_status_customerorder_id}"}
+        },
         "comment": _comment(str(number), dest_name),
         "positions": positions,
     }
@@ -147,10 +156,7 @@ def _ensure_customerorder(
         payload["deliveryPlannedMoment"] = planned
 
     created = ms.create_customer_order(payload)
-    log.info(
-        "customerorder_created",
-        extra={"supply_id": supply_id, "number": number, "ms_id": created.get("id"), "not_found": not_found},
-    )
+    log.info("customerorder_created", extra={"supply_id": supply_id, "number": number, "ms_id": created.get("id")})
     return created
 
 
@@ -291,7 +297,6 @@ def main() -> None:
 
     state = _load_state(fbw_cfg.state_file)
 
-    # First run: bootstrap only (do not import old supplies)
     if not state.get("bootstrappedAt"):
         state["bootstrappedAt"] = datetime.now(timezone.utc).isoformat()
         _save_state(fbw_cfg.state_file, state)
@@ -305,34 +310,31 @@ def main() -> None:
 
     supplies_by_id: Dict[str, Dict[str, Any]] = {}
     for s in supplies:
-        # WB returns supplyID, not id
         sid = s.get("supplyID")
         if sid is None:
             continue
         supplies_by_id[str(sid)] = s
 
-    # Ensure orders for NEW supplies (created AFTER bootstrap, and not in state)
+    # New supplies only (created AFTER bootstrap)
     for sid, s in supplies_by_id.items():
         if sid in state["supplies"]:
             continue
 
         created_dt = _parse_dt(str(s.get("createDate") or ""))
         if created_dt and created_dt.astimezone(timezone.utc) <= boot_at:
-            continue  # skip old supplies
+            continue
 
-        number = str(s.get("supplyID") or "").strip()  # номер в интерфейсе
+        number = str(s.get("supplyID") or "").strip()
         if not number:
             continue
 
+        # goods
         goods = wb.get_goods(sid)
 
-        dest_name = str(
-            s.get("warehouseName")
-            or s.get("warehouse")
-            or s.get("destinationWarehouse")
-            or ""
-        ).strip()
-        plan_date_raw = str(s.get("supplyDate") or s.get("planDate") or "").strip()
+        # destination (warehouse name)
+        dest_name = str(s.get("warehouseName") or "").strip()
+
+        plan_date_raw = str(s.get("supplyDate") or "").strip()
 
         order = _ensure_customerorder(
             cfg=cfg,
@@ -354,7 +356,7 @@ def main() -> None:
             "demand": False,
         }
 
-    # Process ACTIVE supplies (update plan date; create move/demand by status)
+    # Active supplies: update plan date; create move/demand
     for sid, info in list(state["supplies"].items()):
         s = supplies_by_id.get(str(sid))
         if not s:
@@ -372,9 +374,8 @@ def main() -> None:
             continue
 
         status_id = s.get("statusID")
-        plan_date_raw = str(s.get("supplyDate") or s.get("planDate") or "").strip()
+        plan_date_raw = str(s.get("supplyDate") or "").strip()
 
-        # Update plan date while demand not created yet
         if not info.get("demand"):
             _update_planned_date_if_needed(
                 ms=ms,
@@ -383,15 +384,14 @@ def main() -> None:
                 tz_offset=fbw_cfg.fbw_timezone_offset,
             )
 
-        goods: list[Dict[str, Any]] | None = None
+        goods_cache: Optional[list[Dict[str, Any]]] = None
 
         def _get_goods() -> list[Dict[str, Any]]:
-            nonlocal goods
-            if goods is None:
-                goods = wb.get_goods(sid)
-            return goods
+            nonlocal goods_cache
+            if goods_cache is None:
+                goods_cache = wb.get_goods(sid)
+            return goods_cache
 
-        # status 3 -> move
         if status_id == 3 and not info.get("move"):
             move_ext = f"FBW:{order['name']}:MOVE"
             _ensure_move(
@@ -406,7 +406,6 @@ def main() -> None:
             )
             info["move"] = True
 
-        # status 5 -> demand
         if status_id == 5 and not info.get("demand"):
             demand_ext = f"FBW:{order['name']}:DEMAND"
             _ensure_demand(
