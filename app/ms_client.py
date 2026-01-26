@@ -60,7 +60,6 @@ class MSClient:
         updated = self.http.request("PUT", f"/entity/customerorder/{order_id}", json_body=payload)
         return updated or ms_order
 
-    # --- НОВОЕ: получить позиции CustomerOrder ---
     def get_customer_order_positions(self, ms_order: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         В ответе списка customerorder обычно нет positions.
@@ -69,7 +68,6 @@ class MSClient:
         href = (ms_order.get("meta") or {}).get("href") or ""
         if not href:
             return []
-        # href вида: https://api.moysklad.ru/api/remap/1.2/entity/customerorder/<id>
         order_id = href.rstrip("/").split("/")[-1]
         resp = self.http.request("GET", f"/entity/customerorder/{order_id}/positions")
         rows = resp.get("rows") if isinstance(resp, dict) else None
