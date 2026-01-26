@@ -2,8 +2,7 @@ import os
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
-
+load_dotenv(dotenv_path=".env", override=True)
 
 def _must(name: str) -> str:
     v = os.getenv(name)
