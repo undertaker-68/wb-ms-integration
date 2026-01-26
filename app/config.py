@@ -43,13 +43,13 @@ class Config:
     ms_sales_channel_id_wb: str
 
     ms_status_new_id: str
+    ms_status_confirm_id: str
+    ms_status_confirm2_id: str
     ms_status_shipped_id: str
     ms_status_delivering_id: str
     ms_status_delivered_id: str
     ms_status_cancelled_id: str
     ms_status_cancelled_by_seller_id: str
-    ms_status_confirm_id: str
-    ms_status_confirm2_id: str
 
     # WB
     wb_base_url: str
@@ -72,6 +72,8 @@ def load_config() -> Config:
         ms_store_id_wb=_must("MS_STORE_ID_WB"),
         ms_sales_channel_id_wb=_must("MS_SALES_CHANNEL_ID_WB"),
         ms_status_new_id=_opt("MS_STATUS_NEW_ID"),
+        ms_status_confirm_id=_opt("MS_STATUS_CONFIRM_ID"),
+        ms_status_confirm2_id=_opt("MS_STATUS_CONFIRM2_ID"),
         ms_status_shipped_id=_opt("MS_STATUS_SHIPPED_ID"),
         ms_status_delivering_id=_opt("MS_STATUS_DELIVERING_ID"),
         ms_status_delivered_id=_opt("MS_STATUS_DELIVERED_ID"),
@@ -83,6 +85,4 @@ def load_config() -> Config:
         log_level=_opt("LOG_LEVEL", "INFO"),
         http_timeout_sec=int(_opt("HTTP_TIMEOUT_SEC", "30")),
         test_mode=_bool("TEST_MODE", default=False),
-        ms_status_confirm_id=_opt("MS_STATUS_CONFIRM_ID"),
-        ms_status_confirm2_id=_opt("MS_STATUS_CONFIRM2_ID"),
     )
