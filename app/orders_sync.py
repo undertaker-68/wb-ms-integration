@@ -10,10 +10,9 @@ from app.config import load_config
 from app.http import HttpClient
 from app.wb_client import WBClient
 from app.ms_client import MSClient
-from app.logger import get_logger
+import logging
 
-log = get_logger("orders_sync")
-
+log = logging.getLogger("orders_sync")
 
 def parse_dt(s: str) -> datetime:
     s = s.strip().replace("Z", "+00:00")
@@ -21,7 +20,6 @@ def parse_dt(s: str) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
-
 
 def main():
     cfg = load_config()
