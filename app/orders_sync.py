@@ -13,73 +13,55 @@ from .wb_client import WBClient
 
 log = logging.getLogger("orders_sync")
 
-def resolve_ms_state_id(cfg, supplier_status: str | None, wb_status: str | None, has_demand: bool) -> str | None:
+
+def resolve_ms_customerorder_state_id(
+    cfg,
+    supplier_status: str | None,
+    wb_status: str | None,
+    oid: str,
+    active: set[str],
+    *,
+    has_demand: bool,
+) -> str | None:
+    """Маппинг пары (supplierStatus, wbStatus) -> статус CustomerOrder в МС.
+
+    Важные правила:
+    - Отмены обрабатываются только если Demand еще не создан (has_demand=False).
+    - "confirm + waiting" может маппиться в два статуса МС (на сборке / собран)
+      через "память" active.
     """
-    Возвращает ID статуса МС для CustomerOrder
-    или None, если статус менять не нужно
-    """
 
-    # 1. Отмены ДО отгрузки
-    if not has_demand and (
-        supplier_status == "cancel"
-        or wb_status in ("canceled", "canceled_by_client")
-    ):
-        return cfg.ms_status_cancelled_id  # ffc1c72c-...
-
-    # 2. Еще у нас
-    if wb_status == "waiting":
-        if supplier_status == "new":
-            return cfg.ms_status_new_id  # 12ee6581-...
-        if supplier_status == "confirm":
-            return cfg.ms_status_confirm_id  # ffb88772 / ffbc9d6b
-
-    # 3. Уехал от нас
-    if supplier_status == "complete":
-        if wb_status == "waiting":
-            return cfg.ms_status_shipped_id  # 0f8479d9-...
-        if wb_status == "sorted":
-            return cfg.ms_status_delivering_id  # ffbe5466-...
-        if wb_status == "sold":
-            return cfg.ms_status_delivered_id  # ffc02196-...
-
-    return None
-
-def resolve_ms_customerorder_state_id(cfg, supplier_status: str | None, wb_status: str | None, oid: str, active: set[str]) -> str | None:
-    """
-    Возвращает ID статуса CustomerOrder в МС (или None если менять не надо).
-
-    Логика:
-    - confirm+waiting: если заказ уже был в active -> confirm2 (как "собран"), иначе confirm1 ("на сборке")
-    - complete+waiting -> shipped
-    - complete+sorted -> delivering
-    - complete+sold -> delivered
-    - cancel/canceled* -> cancelled (обрабатываем отдельно в main, только если нет Demand)
-    """
     if not supplier_status or not wb_status:
         return None
 
-    # еще у нас
+    # 1) Отмены ДО отгрузки (Demand)
+    if not has_demand and (
+        supplier_status == "cancel" or wb_status in ("canceled", "canceled_by_client")
+    ):
+        return cfg.ms_status_cancelled_id or None
+
+    # 2) Еще у нас
     if wb_status == "waiting":
         if supplier_status == "new":
             return cfg.ms_status_new_id or None
 
         if supplier_status == "confirm":
-            # “двухступенчатый confirm”: первый раз/повтор
+            # Двухшаговый confirm: первый раз -> confirm_id, повтор -> confirm2_id
             if oid in active and cfg.ms_status_confirm2_id:
                 return cfg.ms_status_confirm2_id
             return cfg.ms_status_confirm_id or cfg.ms_status_confirm2_id or None
 
-        if supplier_status == "complete":
+    # 3) Уехал от нас
+    if supplier_status == "complete":
+        if wb_status == "waiting":
             return cfg.ms_status_shipped_id or None
-
-    # у WB
-    if supplier_status == "complete" and wb_status == "sorted":
-        return cfg.ms_status_delivering_id or None
-
-    if supplier_status == "complete" and wb_status == "sold":
-        return cfg.ms_status_delivered_id or None
+        if wb_status == "sorted":
+            return cfg.ms_status_delivering_id or None
+        if wb_status == "sold":
+            return cfg.ms_status_delivered_id or None
 
     return None
+
 
 def build_ms_order_payload(cfg, wb_order: Dict[str, Any], product: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -173,9 +155,7 @@ def main() -> None:
     min_created_at_iso = os.getenv("MIN_CREATED_AT_ISO", "2025-01-23T00:00:00+03:00")
     min_created_at = _parse_iso_dt(min_created_at_iso)
 
-    # Fallback lookback if WB objects don't have createdAt; used only for list_orders date_from.
     # We'll compute date_from from MIN_CREATED_AT_ISO anyway.
-    now = datetime.now(timezone.utc)
     date_from = int(min_created_at.astimezone(timezone.utc).timestamp())
 
     def load_set(path: str) -> set[str]:
@@ -196,7 +176,7 @@ def main() -> None:
     # --- fetch WB orders from cutoff ---
     listed: List[Dict[str, Any]] = []
     next_ = 0
-    for _ in range(50):  # больше, чтобы точно допагинировать
+    for _ in range(50):
         page = wb.list_orders(limit=1000, next_=next_, date_from=date_from)
         batch = page.get("orders", []) if isinstance(page, dict) else []
         listed.extend(batch)
@@ -211,7 +191,6 @@ def main() -> None:
     for o in listed:
         ca = o.get("createdAt") or o.get("created_at")
         if not ca:
-            # if WB doesn't provide createdAt, we trust date_from boundary
             all_orders.append(o)
             continue
         try:
@@ -221,7 +200,6 @@ def main() -> None:
             else:
                 skipped += 1
         except Exception:
-            # can't parse -> keep (safe)
             all_orders.append(o)
 
     log.info("wb_orders_total", extra={"count": len(all_orders), "skipped_by_createdAt": skipped, "min_created_at": min_created_at.isoformat()})
@@ -234,7 +212,7 @@ def main() -> None:
     }
     log.info("wb_statuses_loaded", extra={"count": len(status_by_id)})
 
-    # Prefetch products by article (only for orders that may need MS CustomerOrder)
+    # Prefetch products by article
     uniq_articles = sorted({extract_article(o) for o in all_orders if extract_article(o)})
     product_by_article: Dict[str, Dict[str, Any]] = {}
     for a in uniq_articles:
@@ -255,7 +233,6 @@ def main() -> None:
     activated = 0
     deactivated = 0
 
-    # Process every order in range
     for o in all_orders:
         if "id" not in o:
             continue
@@ -265,15 +242,10 @@ def main() -> None:
         supplier_status = st.get("supplierStatus")
         wb_status = st.get("wbStatus")
 
+        # 1) Если Demand уже есть — стираем и не трогаем больше
         has_demand = False
         if not cfg.test_mode:
             has_demand = bool(ms.find_demand_by_external_code(oid))
-
-        # Demand exists? (your rule: if already shipped in MS -> forget and skip)
-        has_demand = False
-        if not cfg.test_mode:
-            has_demand = bool(ms.find_demand_by_external_code(oid))
-
         if has_demand:
             demand_exists += 1
             if oid in active:
@@ -281,7 +253,7 @@ def main() -> None:
                 deactivated += 1
             continue
 
-        # Cancelled BEFORE demand -> set MS status Cancelled, remove from memory and skip
+        # 2) Отмена ДО Demand — ставим Cancelled и стираем
         if supplier_status == "cancel" or wb_status in ("canceled", "canceled_by_client"):
             cancelled += 1
             if not cfg.test_mode and cfg.ms_status_cancelled_id:
@@ -294,7 +266,7 @@ def main() -> None:
                 deactivated += 1
             continue
 
-        # Ensure CustomerOrder exists in MS (either by our registry or by searching MS)
+        # 3) Гарантируем CustomerOrder
         ms_order = None
         if oid in ms_created and not cfg.test_mode:
             ms_order = ms.find_customer_order_by_external_code(oid)
@@ -303,7 +275,6 @@ def main() -> None:
             ms_order = ms.find_customer_order_by_external_code(oid)
 
         if not ms_order:
-            # Need to create CustomerOrder
             article = extract_article(o)
             if not article:
                 skipped_no_article += 1
@@ -333,8 +304,20 @@ def main() -> None:
                 save_set(ms_created_file, ms_created)
                 log.info("ms_order_created", extra={"order_id": oid, "ms_id": ms_order.get("id"), "article": article})
 
-        # Now create Demand only when wbStatus == sorted
-        if wb_status == "sorted":
+        # 4) Обновляем статус CustomerOrder по паре статусов WB
+        target_state_id = resolve_ms_customerorder_state_id(
+            cfg,
+            supplier_status,
+            wb_status,
+            oid,
+            active,
+            has_demand=has_demand,
+        )
+        if target_state_id and not cfg.test_mode:
+            ms_order = ms.update_customer_order_state(ms_order, target_state_id)
+
+        # 5) Demand создаём строго на complete + sorted
+        if supplier_status == "complete" and wb_status == "sorted":
             if cfg.test_mode:
                 created_demands += 1
                 if oid in active:
@@ -342,7 +325,6 @@ def main() -> None:
                     deactivated += 1
                 log.info("TEST_MODE_would_create_demand", extra={"order_id": oid})
             else:
-                # Demand already checked above; if we are here - it doesn't exist yet
                 demand_payload = build_ms_demand_payload(cfg, ms_order)
                 ms.create_demand(demand_payload)
                 created_demands += 1
@@ -351,12 +333,11 @@ def main() -> None:
                     deactivated += 1
                 log.info("ms_demand_created", extra={"order_id": oid, "externalCode": oid})
         else:
-            # Not sorted yet -> keep in active memory
+            # ещё не время Demand -> держим в памяти active
             if oid not in active:
                 active.add(oid)
                 activated += 1
 
-    # Save active state
     save_set(active_file, active)
 
     log.info(
