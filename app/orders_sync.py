@@ -128,6 +128,7 @@ def build_ms_demand_payload(cfg, ms_order: Dict[str, Any], order_positions: List
         "store": ms_order["store"],
         "customerOrder": {"meta": ms_order["meta"]},
         "positions": demand_positions,
+        "applicable": False,
     }
 
     return payload
