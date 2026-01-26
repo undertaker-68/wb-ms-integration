@@ -364,8 +364,33 @@ def main() -> None:
                 log.info("TEST_MODE_would_create_demand", extra={"order_id": oid})
             else:
                 order_positions = ms.get_customer_order_positions(ms_order)
+                import requests
+
+                order_positions = ms.get_customer_order_positions(ms_order)
                 demand_payload = build_ms_demand_payload(cfg, ms_order, order_positions)
-                ms.create_demand(demand_payload)
+
+                demand = ms.create_demand(demand_payload)
+
+                # пробуем провести
+                try:
+                    ms.set_demand_applicable(demand, True)
+                    log.info("ms_demand_applied", extra={"order_id": oid})
+                except requests.exceptions.HTTPError as e:
+                    # если не проводимая (нет остатков) — оставляем непроведённой
+                    resp = getattr(e, "response", None)
+                    status = getattr(resp, "status_code", None)
+                    body = {}
+                    try:
+                        body = resp.json() if resp is not None else {}
+                    except Exception:
+                        body = {}
+
+                    # МС: 412 + code 3007 "Нельзя отгрузить товар, которого нет на складе"
+                    ms_err_codes = {err.get("code") for err in (body.get("errors") or []) if isinstance(err, dict)}
+                    if status == 412 and 3007 in ms_err_codes:
+                        log.info("ms_demand_left_unapplied_no_stock", extra={"order_id": oid})
+                    else:
+                        raise
 
                 created_demands += 1
                 if oid in active:
