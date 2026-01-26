@@ -9,7 +9,7 @@ class MSClient:
         self.http = http
 
     def find_product_by_article(self, article: str) -> Optional[Dict[str, Any]]:
-        # Ищем по артикулу (code/article)
+        # Ищем по артикулу (article)
         resp = self.http.request("GET", "/entity/product", params={"filter": f"article={article}"})
         rows = resp.get("rows") if isinstance(resp, dict) else None
         if rows:
@@ -79,5 +79,24 @@ class MSClient:
             return demand
         demand_id = href.rstrip("/").split("/")[-1]
         payload = {"applicable": bool(applicable)}
+        updated = self.http.request("PUT", f"/entity/demand/{demand_id}", json_body=payload)
+        return updated or demand
+
+    def update_demand_state(self, demand: Dict[str, Any], state_id: str) -> Dict[str, Any]:
+        """Идемпотентно обновляет статус Demand (Отгрузки) в МС."""
+        if not state_id:
+            return demand
+
+        href = (demand.get("meta") or {}).get("href") or ""
+        if not href:
+            return demand
+        demand_id = href.rstrip("/").split("/")[-1]
+
+        target_href = f"{self.http.base_url}/entity/demand/metadata/states/{state_id}"
+        current_href = ((demand.get("state") or {}).get("meta") or {}).get("href") or ""
+        if current_href == target_href:
+            return demand
+
+        payload = {"state": {"meta": {"type": "state", "href": target_href}}}
         updated = self.http.request("PUT", f"/entity/demand/{demand_id}", json_body=payload)
         return updated or demand
