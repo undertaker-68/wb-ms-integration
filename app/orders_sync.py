@@ -44,6 +44,43 @@ def resolve_ms_state_id(cfg, supplier_status: str | None, wb_status: str | None,
 
     return None
 
+def resolve_ms_customerorder_state_id(cfg, supplier_status: str | None, wb_status: str | None, oid: str, active: set[str]) -> str | None:
+    """
+    Возвращает ID статуса CustomerOrder в МС (или None если менять не надо).
+
+    Логика:
+    - confirm+waiting: если заказ уже был в active -> confirm2 (как "собран"), иначе confirm1 ("на сборке")
+    - complete+waiting -> shipped
+    - complete+sorted -> delivering
+    - complete+sold -> delivered
+    - cancel/canceled* -> cancelled (обрабатываем отдельно в main, только если нет Demand)
+    """
+    if not supplier_status or not wb_status:
+        return None
+
+    # еще у нас
+    if wb_status == "waiting":
+        if supplier_status == "new":
+            return cfg.ms_status_new_id or None
+
+        if supplier_status == "confirm":
+            # “двухступенчатый confirm”: первый раз/повтор
+            if oid in active and cfg.ms_status_confirm2_id:
+                return cfg.ms_status_confirm2_id
+            return cfg.ms_status_confirm_id or cfg.ms_status_confirm2_id or None
+
+        if supplier_status == "complete":
+            return cfg.ms_status_shipped_id or None
+
+    # у WB
+    if supplier_status == "complete" and wb_status == "sorted":
+        return cfg.ms_status_delivering_id or None
+
+    if supplier_status == "complete" and wb_status == "sold":
+        return cfg.ms_status_delivered_id or None
+
+    return None
+
 def build_ms_order_payload(cfg, wb_order: Dict[str, Any], product: Dict[str, Any]) -> Dict[str, Any]:
     """
     Номер заказа МС = Номеру заказа WB (как в интерфейсе) => используем WB id (например 4508276599).
@@ -232,15 +269,26 @@ def main() -> None:
         if not cfg.test_mode:
             has_demand = bool(ms.find_demand_by_external_code(oid))
 
-        # Cancelled -> remove from memory and skip
-        ms_state_id = resolve_ms_state_id(cfg, supplier_status, wb_status, has_demand)
+        # Demand exists? (your rule: if already shipped in MS -> forget and skip)
+        has_demand = False
+        if not cfg.test_mode:
+            has_demand = bool(ms.find_demand_by_external_code(oid))
 
-        if ms_state_id and not cfg.test_mode:
-            ms.update_customer_order_state(oid, ms_state_id)
-
-        # If Demand exists -> erase from memory and skip (your rule)
-        if not cfg.test_mode and ms.find_demand_by_external_code(oid):
+        if has_demand:
             demand_exists += 1
+            if oid in active:
+                active.discard(oid)
+                deactivated += 1
+            continue
+
+        # Cancelled BEFORE demand -> set MS status Cancelled, remove from memory and skip
+        if supplier_status == "cancel" or wb_status in ("canceled", "canceled_by_client"):
+            cancelled += 1
+            if not cfg.test_mode and cfg.ms_status_cancelled_id:
+                ms_order_tmp = ms.find_customer_order_by_external_code(oid)
+                if ms_order_tmp:
+                    ms.update_customer_order_state(ms_order_tmp, cfg.ms_status_cancelled_id)
+
             if oid in active:
                 active.discard(oid)
                 deactivated += 1
