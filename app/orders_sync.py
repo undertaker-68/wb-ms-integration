@@ -169,7 +169,7 @@ def main() -> None:
     ms_created_file = os.getenv("MS_CREATED_FILE", "/root/wb_ms_integration/ms_created_orders.json")
     active_file = os.getenv("ACTIVE_FILE", "/root/wb_ms_integration/active_orders.json")
 
-    min_created_at_iso = os.getenv("MIN_CREATED_AT_ISO", "2026-01-24T00:00:00+03:00")
+    min_created_at_iso = os.getenv("MIN_CREATED_AT_ISO", "2026-01-22T00:00:00+03:00")
     min_created_at = _parse_iso_dt(min_created_at_iso)
     date_from = int(min_created_at.astimezone(timezone.utc).timestamp())
 
