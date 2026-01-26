@@ -13,6 +13,36 @@ from .wb_client import WBClient
 
 log = logging.getLogger("orders_sync")
 
+def resolve_ms_state_id(cfg, supplier_status: str | None, wb_status: str | None, has_demand: bool) -> str | None:
+    """
+    Возвращает ID статуса МС для CustomerOrder
+    или None, если статус менять не нужно
+    """
+
+    # 1. Отмены ДО отгрузки
+    if not has_demand and (
+        supplier_status == "cancel"
+        or wb_status in ("canceled", "canceled_by_client")
+    ):
+        return cfg.ms_status_cancelled_id  # ffc1c72c-...
+
+    # 2. Еще у нас
+    if wb_status == "waiting":
+        if supplier_status == "new":
+            return cfg.ms_status_new_id  # 12ee6581-...
+        if supplier_status == "confirm":
+            return cfg.ms_status_confirm_id  # ffb88772 / ffbc9d6b
+
+    # 3. Уехал от нас
+    if supplier_status == "complete":
+        if wb_status == "waiting":
+            return cfg.ms_status_shipped_id  # 0f8479d9-...
+        if wb_status == "sorted":
+            return cfg.ms_status_delivering_id  # ffbe5466-...
+        if wb_status == "sold":
+            return cfg.ms_status_delivered_id  # ffc02196-...
+
+    return None
 
 def build_ms_order_payload(cfg, wb_order: Dict[str, Any], product: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -198,13 +228,15 @@ def main() -> None:
         supplier_status = st.get("supplierStatus")
         wb_status = st.get("wbStatus")
 
+        has_demand = False
+        if not cfg.test_mode:
+            has_demand = bool(ms.find_demand_by_external_code(oid))
+
         # Cancelled -> remove from memory and skip
-        if supplier_status == "cancel" or wb_status == "canceled":
-            cancelled += 1
-            if oid in active:
-                active.discard(oid)
-                deactivated += 1
-            continue
+        ms_state_id = resolve_ms_state_id(cfg, supplier_status, wb_status, has_demand)
+
+        if ms_state_id and not cfg.test_mode:
+            ms.update_customer_order_state(oid, ms_state_id)
 
         # If Demand exists -> erase from memory and skip (your rule)
         if not cfg.test_mode and ms.find_demand_by_external_code(oid):
