@@ -375,6 +375,12 @@ def main() -> None:
                 try:
                     ms.set_demand_applicable(demand, True)
                     log.info("ms_demand_applied", extra={"order_id": oid})
+                if cfg.ms_demand_status_id:
+                    ms.update_demand_state(demand, cfg.ms_demand_status_id)
+                    log.info(
+                    "ms_demand_state_set",
+                    extra={"order_id": oid, "state_id": cfg.ms_demand_status_id},
+                )
                 except requests.exceptions.HTTPError as e:
                     # если не проводимая (нет остатков) — оставляем непроведённой
                     resp = getattr(e, "response", None)
