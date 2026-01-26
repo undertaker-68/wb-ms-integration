@@ -72,3 +72,12 @@ class MSClient:
         resp = self.http.request("GET", f"/entity/customerorder/{order_id}/positions")
         rows = resp.get("rows") if isinstance(resp, dict) else None
         return rows or []
+
+    def set_demand_applicable(self, demand: dict, applicable: bool) -> dict:
+        href = (demand.get("meta") or {}).get("href") or ""
+        if not href:
+            return demand
+        demand_id = href.rstrip("/").split("/")[-1]
+        payload = {"applicable": bool(applicable)}
+        updated = self.http.request("PUT", f"/entity/demand/{demand_id}", json_body=payload)
+        return updated or demand
