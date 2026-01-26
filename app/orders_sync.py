@@ -357,6 +357,10 @@ def main() -> None:
             active,
             has_demand=has_demand,
         )
+
+        if target_state_id == demand_state_id:
+            target_state_id = None
+
         if target_state_id and not cfg.test_mode:
             ms_order = ms.update_customer_order_state(ms_order, target_state_id)
 
