@@ -55,3 +55,27 @@ class MSClient:
         resp = self.http.request("GET", f"/entity/customerorder/{order_id}/positions")
         rows = resp.get("rows") if isinstance(resp, dict) else None
         return rows or []
+
+    def update_customer_order_state(self, ms_order: Dict[str, Any], state_id: str) -> Dict[str, Any]:
+        """
+        Идемпотентно обновляет статус CustomerOrder.
+        Ничего не делает, если уже стоит нужный статус.
+        """
+        if not state_id:
+            return ms_order
+
+        href = (ms_order.get("meta") or {}).get("href") or ""
+        if not href:
+            return ms_order
+        order_id = href.rstrip("/").split("/")[-1]
+
+        current_state_href = ((ms_order.get("state") or {}).get("meta") or {}).get("href") or ""
+        target_href = f"{self.http.base_url}/entity/customerorder/metadata/states/{state_id}"
+
+        # Уже нужный статус
+        if current_state_href == target_href:
+            return ms_order
+
+        payload = {"state": {"meta": {"type": "state", "href": target_href}}}
+        updated = self.http.request("PUT", f"/entity/customerorder/{order_id}", json_body=payload)
+        return updated or ms_order
