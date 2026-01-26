@@ -330,14 +330,29 @@ def main() -> None:
         if target_state_id and not cfg.test_mode:
             ms_order = ms.update_customer_order_state(ms_order, target_state_id)
 
-        # 5) Demand создаём по СТАТУСУ МС (а не по WB)
-        # Триггер: CustomerOrder в статусе "Доставляется" и Demand ещё нет.
-        ms_state_href = ((ms_order.get("state") or {}).get("meta") or {}).get("href") or ""
-        delivering_href = ""
-        if cfg.ms_status_delivering_id:
-            delivering_href = f"{cfg.ms_base_url}/entity/customerorder/metadata/states/{cfg.ms_status_delivering_id}"
+        # 5) Demand создаём по СТАТУСУ МС (blacklist-логика)
 
-        should_create_demand = bool(delivering_href and ms_state_href == delivering_href)
+        ms_state_href = ((ms_order.get("state") or {}).get("meta") or {}).get("href") or ""
+
+        # Статусы МС, при которых Demand СОЗДАВАТЬ НЕЛЬЗЯ
+        blacklist_state_ids = {
+            cfg.ms_status_new_id,        # Новый
+            cfg.ms_status_confirm_id,    # Ожидает сборки
+            cfg.ms_status_confirm2_id,   # Ожидает сборки (второй)
+            cfg.ms_status_shipped_id,    # Отгружено
+            cfg.ms_status_cancelled_id,  # Отменен
+        }
+
+        blacklist_hrefs = {
+            f"{cfg.ms_base_url}/entity/customerorder/metadata/states/{sid}"
+            for sid in blacklist_state_ids
+            if sid
+        }
+
+        should_create_demand = (
+            ms_state_href
+            and ms_state_href not in blacklist_hrefs
+        )
 
         if should_create_demand:
             if cfg.test_mode:
