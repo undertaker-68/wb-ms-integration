@@ -23,14 +23,14 @@ def resolve_ms_customerorder_state_id(
     *,
     has_demand: bool,
 ) -> str | None:
-    """Маппинг пары (supplierStatus, wbStatus) -> статус CustomerOrder в МС.
-
-    Важные правила:
-    - Отмены обрабатываются только если Demand еще не создан (has_demand=False).
-    - "confirm + waiting" может маппиться в два статуса МС (на сборке / собран)
-      через "память" active.
     """
+    Маппинг пары (supplierStatus, wbStatus) -> статус CustomerOrder в МС.
 
+    Правила:
+    - Отмены обрабатываем только если Demand ещё НЕ создан.
+    - "confirm + waiting" может маппиться в 2 статуса МС (на сборке/собран) через active.
+    - complete+sorted больше НЕ является триггером создания Demand (Demand создаём по статусу МС).
+    """
     if not supplier_status or not wb_status:
         return None
 
@@ -40,7 +40,7 @@ def resolve_ms_customerorder_state_id(
     ):
         return cfg.ms_status_cancelled_id or None
 
-    # 2) Еще у нас
+    # 2) Ещё у нас
     if wb_status == "waiting":
         if supplier_status == "new":
             return cfg.ms_status_new_id or None
@@ -51,7 +51,7 @@ def resolve_ms_customerorder_state_id(
                 return cfg.ms_status_confirm2_id
             return cfg.ms_status_confirm_id or cfg.ms_status_confirm2_id or None
 
-    # 3) Уехал от нас
+    # 3) Уехал от нас / у WB
     if supplier_status == "complete":
         if wb_status == "waiting":
             return cfg.ms_status_shipped_id or None
@@ -65,13 +65,13 @@ def resolve_ms_customerorder_state_id(
 
 def build_ms_order_payload(cfg, wb_order: Dict[str, Any], product: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Номер заказа МС = Номеру заказа WB (как в интерфейсе) => используем WB id (например 4508276599).
+    Номер заказа МС = номеру заказа WB (как в интерфейсе) => используем WB id.
     """
     order_num = str(wb_order["id"])
     external_code = order_num
     name = order_num
 
-    qty = 1  # WB FBS: одна позиция/1 шт (если будет иначе — расширим)
+    qty = 1
     sale_prices = product.get("salePrices") or []
     price = int(sale_prices[0]["value"]) if sale_prices and sale_prices[0].get("value") is not None else 0
 
@@ -98,8 +98,28 @@ def build_ms_order_payload(cfg, wb_order: Dict[str, Any], product: Dict[str, Any
     return payload
 
 
-def build_ms_demand_payload(cfg, ms_order: Dict[str, Any]) -> Dict[str, Any]:
+def build_ms_demand_payload(cfg, ms_order: Dict[str, Any], order_positions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Создаём Отгрузку (Demand) и связываем её с Заказом покупателя (CustomerOrder)
+    как в интерфейсе МойСклад: вкладка "Связанные документы".
+
+    Ключевое:
+    - customerOrder.meta -> связь с заказом
+    - positions -> чтобы отгрузка была полноценной
+    """
     external_code = ms_order.get("externalCode") or ms_order.get("name")
+
+    demand_positions: List[Dict[str, Any]] = []
+    for p in order_positions:
+        assortment_meta = ((p.get("assortment") or {}).get("meta")) or None
+        if not assortment_meta:
+            continue
+        demand_positions.append({
+            "quantity": p.get("quantity", 1),
+            "price": p.get("price", 0),
+            "assortment": {"meta": assortment_meta},
+        })
+
     payload: Dict[str, Any] = {
         "name": f"WB-{external_code}",
         "externalCode": str(external_code),
@@ -107,9 +127,9 @@ def build_ms_demand_payload(cfg, ms_order: Dict[str, Any]) -> Dict[str, Any]:
         "agent": ms_order["agent"],
         "store": ms_order["store"],
         "customerOrder": {"meta": ms_order["meta"]},
+        "positions": demand_positions,
     }
-    if cfg.ms_status_shipped_id:
-        payload["state"] = {"meta": {"type": "state", "href": f"{cfg.ms_base_url}/entity/demand/metadata/states/{cfg.ms_status_shipped_id}"}}
+
     return payload
 
 
@@ -145,17 +165,11 @@ def main() -> None:
 
     log.info("start", extra={"test_mode": cfg.test_mode})
 
-    # --- files ---
     ms_created_file = os.getenv("MS_CREATED_FILE", "/root/wb_ms_integration/ms_created_orders.json")
-
-    # Active WB orders that are "in work" (CustomerOrder exists, Demand not created yet).
     active_file = os.getenv("ACTIVE_FILE", "/root/wb_ms_integration/active_orders.json")
 
-    # Cutoff: process all WB orders created from this datetime inclusive.
     min_created_at_iso = os.getenv("MIN_CREATED_AT_ISO", "2025-01-23T00:00:00+03:00")
     min_created_at = _parse_iso_dt(min_created_at_iso)
-
-    # We'll compute date_from from MIN_CREATED_AT_ISO anyway.
     date_from = int(min_created_at.astimezone(timezone.utc).timestamp())
 
     def load_set(path: str) -> set[str]:
@@ -316,8 +330,16 @@ def main() -> None:
         if target_state_id and not cfg.test_mode:
             ms_order = ms.update_customer_order_state(ms_order, target_state_id)
 
-        # 5) Demand создаём строго на complete + sorted
-        if supplier_status == "complete" and wb_status == "sorted":
+        # 5) Demand создаём по СТАТУСУ МС (а не по WB)
+        # Триггер: CustomerOrder в статусе "Доставляется" и Demand ещё нет.
+        ms_state_href = ((ms_order.get("state") or {}).get("meta") or {}).get("href") or ""
+        delivering_href = ""
+        if cfg.ms_status_delivering_id:
+            delivering_href = f"{cfg.ms_base_url}/entity/customerorder/metadata/states/{cfg.ms_status_delivering_id}"
+
+        should_create_demand = bool(delivering_href and ms_state_href == delivering_href)
+
+        if should_create_demand:
             if cfg.test_mode:
                 created_demands += 1
                 if oid in active:
@@ -325,13 +347,15 @@ def main() -> None:
                     deactivated += 1
                 log.info("TEST_MODE_would_create_demand", extra={"order_id": oid})
             else:
-                demand_payload = build_ms_demand_payload(cfg, ms_order)
+                order_positions = ms.get_customer_order_positions(ms_order)
+                demand_payload = build_ms_demand_payload(cfg, ms_order, order_positions)
                 ms.create_demand(demand_payload)
+
                 created_demands += 1
                 if oid in active:
                     active.discard(oid)
                     deactivated += 1
-                log.info("ms_demand_created", extra={"order_id": oid, "externalCode": oid})
+                log.info("ms_demand_created", extra={"order_id": oid, "externalCode": oid, "positions": len(order_positions)})
         else:
             # ещё не время Demand -> держим в памяти active
             if oid not in active:
