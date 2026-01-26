@@ -15,11 +15,14 @@ log = logging.getLogger("orders_sync")
 
 
 def build_ms_order_payload(cfg, wb_order: Dict[str, Any], product: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Номер заказа МС = Номеру заказа WB (как в интерфейсе) => используем WB id (например 4508276599).
+    """
     order_num = str(wb_order["id"])
     external_code = order_num
     name = order_num
 
-    qty = 1
+    qty = 1  # WB FBS: одна позиция/1 шт (если будет иначе — расширим)
     sale_prices = product.get("salePrices") or []
     price = int(sale_prices[0]["value"]) if sale_prices and sale_prices[0].get("value") is not None else 0
 
@@ -46,20 +49,8 @@ def build_ms_order_payload(cfg, wb_order: Dict[str, Any], product: Dict[str, Any
     return payload
 
 
-def build_ms_demand_payload(cfg, ms_order: Dict[str, Any], ms_positions: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    ВАЖНО: Demand не подтягивает позиции сам по customerOrder — их надо передать явно.
-    """
+def build_ms_demand_payload(cfg, ms_order: Dict[str, Any]) -> Dict[str, Any]:
     external_code = ms_order.get("externalCode") or ms_order.get("name")
-
-    demand_positions: List[Dict[str, Any]] = []
-    for p in ms_positions:
-        demand_positions.append({
-            "quantity": p.get("quantity", 0),
-            "price": p.get("price", 0),
-            "assortment": {"meta": (p.get("assortment") or {}).get("meta")},
-        })
-
     payload: Dict[str, Any] = {
         "name": f"WB-{external_code}",
         "externalCode": str(external_code),
@@ -67,17 +58,22 @@ def build_ms_demand_payload(cfg, ms_order: Dict[str, Any], ms_positions: List[Di
         "agent": ms_order["agent"],
         "store": ms_order["store"],
         "customerOrder": {"meta": ms_order["meta"]},
-        "positions": demand_positions,
     }
-
     if cfg.ms_status_shipped_id:
         payload["state"] = {"meta": {"type": "state", "href": f"{cfg.ms_base_url}/entity/demand/metadata/states/{cfg.ms_status_shipped_id}"}}
-
     return payload
 
 
 def extract_article(wb_order: Dict[str, Any]) -> str:
     return str(wb_order.get("article") or "").strip()
+
+
+def _parse_iso_dt(s: str) -> datetime:
+    ss = s.strip().replace("Z", "+00:00")
+    dt = datetime.fromisoformat(ss)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def main() -> None:
@@ -100,23 +96,20 @@ def main() -> None:
 
     log.info("start", extra={"test_mode": cfg.test_mode})
 
-    state_file = os.getenv("STATE_FILE", "/root/wb_ms_integration/state_seen_orders.json")
-    bootstrap = os.getenv("BOOTSTRAP", "0") == "1"
+    # --- files ---
     ms_created_file = os.getenv("MS_CREATED_FILE", "/root/wb_ms_integration/ms_created_orders.json")
-    pending_file = os.getenv("PENDING_FILE", "/root/wb_ms_integration/pending_orders.json")
-    lookback_days = int(os.getenv("ORDER_LOOKBACK_DAYS", "30"))
 
-    min_created_at_iso = os.getenv("MIN_CREATED_AT_ISO", "")
-    min_created_at: datetime | None = None
-    if min_created_at_iso:
-        try:
-            s = min_created_at_iso.replace("Z", "+00:00")
-            min_created_at = datetime.fromisoformat(s)
-            if min_created_at.tzinfo is None:
-                min_created_at = min_created_at.replace(tzinfo=timezone.utc)
-        except Exception:
-            log.warning("bad_MIN_CREATED_AT_ISO_skip", extra={"value": min_created_at_iso})
-            min_created_at = None
+    # Active WB orders that are "in work" (CustomerOrder exists, Demand not created yet).
+    active_file = os.getenv("ACTIVE_FILE", "/root/wb_ms_integration/active_orders.json")
+
+    # Cutoff: process all WB orders created from this datetime inclusive.
+    min_created_at_iso = os.getenv("MIN_CREATED_AT_ISO", "2025-01-23T00:00:00+03:00")
+    min_created_at = _parse_iso_dt(min_created_at_iso)
+
+    # Fallback lookback if WB objects don't have createdAt; used only for list_orders date_from.
+    # We'll compute date_from from MIN_CREATED_AT_ISO anyway.
+    now = datetime.now(timezone.utc)
+    date_from = int(min_created_at.astimezone(timezone.utc).timestamp())
 
     def load_set(path: str) -> set[str]:
         try:
@@ -130,14 +123,13 @@ def main() -> None:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(sorted(s), f, ensure_ascii=False, indent=2)
 
-    new_orders = wb.get_new_orders()
-    log.info("wb_new_orders_loaded", extra={"count": len(new_orders)})
+    ms_created = load_set(ms_created_file)
+    active = load_set(active_file)
 
+    # --- fetch WB orders from cutoff ---
     listed: List[Dict[str, Any]] = []
-    now = datetime.now(timezone.utc)
-    date_from = int((now - timedelta(days=lookback_days)).timestamp())
     next_ = 0
-    for _ in range(10):
+    for _ in range(50):  # больше, чтобы точно допагинировать
         page = wb.list_orders(limit=1000, next_=next_, date_from=date_from)
         batch = page.get("orders", []) if isinstance(page, dict) else []
         listed.extend(batch)
@@ -146,214 +138,163 @@ def main() -> None:
         if not batch:
             break
 
-    all_by_id: Dict[int, Dict[str, Any]] = {}
-    for o in new_orders + listed:
-        if "id" in o:
-            all_by_id[int(o["id"])] = o
-    all_orders = list(all_by_id.values())
+    # Filter by createdAt if WB provides it (strictly enforce MIN_CREATED_AT_ISO)
+    all_orders: List[Dict[str, Any]] = []
+    skipped = 0
+    for o in listed:
+        ca = o.get("createdAt") or o.get("created_at")
+        if not ca:
+            # if WB doesn't provide createdAt, we trust date_from boundary
+            all_orders.append(o)
+            continue
+        try:
+            dt = _parse_iso_dt(str(ca))
+            if dt >= min_created_at:
+                all_orders.append(o)
+            else:
+                skipped += 1
+        except Exception:
+            # can't parse -> keep (safe)
+            all_orders.append(o)
 
-    if min_created_at is not None:
-        filtered: List[Dict[str, Any]] = []
-        for o in all_orders:
-            ca = o.get("createdAt") or o.get("created_at")
-            if not ca:
-                filtered.append(o)
-                continue
-            try:
-                s = str(ca).replace("Z", "+00:00")
-                dt = datetime.fromisoformat(s)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                if dt >= min_created_at:
-                    filtered.append(o)
-            except Exception:
-                filtered.append(o)
-        all_orders = filtered
+    log.info("wb_orders_total", extra={"count": len(all_orders), "skipped_by_createdAt": skipped, "min_created_at": min_created_at.isoformat()})
 
-    log.info("wb_orders_total", extra={"count": len(all_orders)})
-
-    def order_num(o: Dict[str, Any]) -> str:
-        return str(o["id"])
-
-    seen = load_set(state_file)
-    current = {order_num(o) for o in all_orders}
-
-    if bootstrap or not seen:
-        save_set(state_file, current)
-        log.info("bootstrap_done_skip_processing", extra={"saved": len(current), "state_file": state_file})
-        return
-
-    new_only = [o for o in all_orders if order_num(o) not in seen]
-    log.info("after_filter_new_only", extra={"new_count": len(new_only), "seen_count": len(seen)})
-
-    pending = load_set(pending_file)
-
-    ids_new = [int(o["id"]) for o in new_only if "id" in o]
-    ids_pending = [int(x) for x in pending if str(x).isdigit()]
-    ids = sorted(set(ids_new + ids_pending))
-
+    # Build id list for statuses
+    ids = sorted({int(o["id"]) for o in all_orders if "id" in o})
     statuses = wb.get_orders_status(ids) if ids else []
-    status_by_id: Dict[int, Dict[str, Any]] = {int(s["id"]): s for s in statuses if isinstance(s, dict) and "id" in s}
+    status_by_id: Dict[int, Dict[str, Any]] = {
+        int(s["id"]): s for s in statuses if isinstance(s, dict) and "id" in s
+    }
     log.info("wb_statuses_loaded", extra={"count": len(status_by_id)})
 
-    uniq_articles = sorted({extract_article(o) for o in new_only if extract_article(o)})
+    # Prefetch products by article (only for orders that may need MS CustomerOrder)
+    uniq_articles = sorted({extract_article(o) for o in all_orders if extract_article(o)})
     product_by_article: Dict[str, Dict[str, Any]] = {}
     for a in uniq_articles:
+        if not a:
+            continue
         p = ms.find_product_by_article(a)
         if p:
             product_by_article[a] = p
-        _t.sleep(0.12)
+        _t.sleep(0.08)
     log.info("ms_products_prefetched", extra={"uniq_articles": len(uniq_articles), "found": len(product_by_article)})
 
-    ms_created = load_set(ms_created_file)
-
-    created_count = 0
+    created_orders = 0
+    created_demands = 0
     skipped_no_article = 0
     skipped_no_product = 0
-    skipped_already_created = 0
-    demand_created = 0
     cancelled = 0
-    pending_touched = 0
-    pending_closed = 0
+    demand_exists = 0
+    activated = 0
+    deactivated = 0
 
-    # 1) pending
-    if pending:
-        for ext_code in sorted(pending):
-            oid = int(ext_code) if str(ext_code).isdigit() else None
-            if not oid:
-                continue
-
-            st = status_by_id.get(oid, {})
-            supplier_status = st.get("supplierStatus")
-            wb_status = st.get("wbStatus")
-
-            if supplier_status == "cancel" or wb_status == "canceled":
-                pending_closed += 1
-                cancelled += 1
-                pending.discard(str(ext_code))
-                log.info("pending_cancelled_drop", extra={"order_id": str(ext_code)})
-                continue
-
-            if wb_status == "sorted":
-                if cfg.test_mode:
-                    log.info("TEST_MODE_pending_sorted_would_create_demand", extra={"order_id": str(ext_code)})
-                    pending_closed += 1
-                    pending.discard(str(ext_code))
-                    continue
-
-                if not ms.find_demand_by_external_code(str(ext_code)):
-                    ms_order = ms.find_customer_order_by_external_code(str(ext_code))
-                    if not ms_order:
-                        log.warning("pending_ms_order_missing", extra={"order_id": str(ext_code)})
-                        continue
-
-                    ms_positions = ms.get_customer_order_positions(ms_order)
-                    demand_payload = build_ms_demand_payload(cfg, ms_order, ms_positions)
-                    ms.create_demand(demand_payload)
-                    demand_created += 1
-                    log.info("ms_demand_created_from_pending", extra={"order_id": str(ext_code), "externalCode": str(ext_code), "positions": len(ms_positions)})
-                else:
-                    log.info("ms_demand_exists_for_pending", extra={"order_id": str(ext_code)})
-
-                pending_closed += 1
-                pending.discard(str(ext_code))
-                continue
-
-            pending_touched += 1
-
-        save_set(pending_file, pending)
-
-    # 2) new orders
-    for o in new_only:
-        num = order_num(o)
-        ext_code = num
-
-        if ext_code in ms_created:
-            skipped_already_created += 1
-            log.info("skip_already_created", extra={"order_id": num})
+    # Process every order in range
+    for o in all_orders:
+        if "id" not in o:
             continue
 
-        article = extract_article(o)
-        if not article:
-            skipped_no_article += 1
-            log.warning("skip_no_article", extra={"order_id": num})
-            continue
-
-        product = product_by_article.get(article)
-        if not product:
-            skipped_no_product += 1
-            log.warning("skip_no_ms_product", extra={"order_id": num, "article": article})
-            continue
-
+        oid = str(o["id"])
         st = status_by_id.get(int(o["id"]), {})
         supplier_status = st.get("supplierStatus")
         wb_status = st.get("wbStatus")
 
+        # Cancelled -> remove from memory and skip
         if supplier_status == "cancel" or wb_status == "canceled":
             cancelled += 1
-            log.info("order_cancelled_seen", extra={"order_id": num})
+            if oid in active:
+                active.discard(oid)
+                deactivated += 1
             continue
 
-        payload = build_ms_order_payload(cfg, o, product)
+        # If Demand exists -> erase from memory and skip (your rule)
+        if not cfg.test_mode and ms.find_demand_by_external_code(oid):
+            demand_exists += 1
+            if oid in active:
+                active.discard(oid)
+                deactivated += 1
+            continue
 
-        if cfg.test_mode:
-            created_count += 1
-            log.info("TEST_MODE_skip_ms_order_create", extra={"order_id": num, "article": article})
-            ms_order = {
-                "id": "TEST",
-                "meta": {"type": "customerorder", "href": "TEST"},
-                "externalCode": ext_code,
-                "name": ext_code,
-                "organization": payload["organization"],
-                "agent": payload["agent"],
-                "store": payload["store"],
-            }
-            ms_positions = payload["positions"]
-        else:
-            ms_order = ms.create_customer_order(payload)
-            created_count += 1
-            log.info("ms_order_created", extra={"order_id": num, "ms_id": ms_order.get("id"), "article": article})
-            ms_created.add(ext_code)
-            save_set(ms_created_file, ms_created)
-            # позиции только что созданного заказа уже знаем из payload
-            ms_positions = payload["positions"]
+        # Ensure CustomerOrder exists in MS (either by our registry or by searching MS)
+        ms_order = None
+        if oid in ms_created and not cfg.test_mode:
+            ms_order = ms.find_customer_order_by_external_code(oid)
 
+        if not ms_order and not cfg.test_mode:
+            ms_order = ms.find_customer_order_by_external_code(oid)
+
+        if not ms_order:
+            # Need to create CustomerOrder
+            article = extract_article(o)
+            if not article:
+                skipped_no_article += 1
+                continue
+            product = product_by_article.get(article)
+            if not product:
+                skipped_no_product += 1
+                continue
+
+            payload = build_ms_order_payload(cfg, o, product)
+
+            if cfg.test_mode:
+                created_orders += 1
+                ms_order = {
+                    "id": "TEST",
+                    "meta": {"type": "customerorder", "href": "TEST"},
+                    "externalCode": oid,
+                    "name": oid,
+                    "organization": payload["organization"],
+                    "agent": payload["agent"],
+                    "store": payload["store"],
+                }
+            else:
+                ms_order = ms.create_customer_order(payload)
+                created_orders += 1
+                ms_created.add(oid)
+                save_set(ms_created_file, ms_created)
+                log.info("ms_order_created", extra={"order_id": oid, "ms_id": ms_order.get("id"), "article": article})
+
+        # Now create Demand only when wbStatus == sorted
         if wb_status == "sorted":
             if cfg.test_mode:
-                log.info("TEST_MODE_skip_ms_demand_create", extra={"order_id": num, "externalCode": ext_code})
+                created_demands += 1
+                if oid in active:
+                    active.discard(oid)
+                    deactivated += 1
+                log.info("TEST_MODE_would_create_demand", extra={"order_id": oid})
             else:
-                if not ms.find_demand_by_external_code(ext_code):
-                    demand_payload = build_ms_demand_payload(cfg, ms_order, ms_positions)
-                    ms.create_demand(demand_payload)
-                    demand_created += 1
-                    log.info("ms_demand_created", extra={"order_id": num, "externalCode": ext_code, "positions": len(ms_positions)})
-                else:
-                    log.info("ms_demand_exists", extra={"order_id": num, "externalCode": ext_code})
+                # Demand already checked above; if we are here - it doesn't exist yet
+                demand_payload = build_ms_demand_payload(cfg, ms_order)
+                ms.create_demand(demand_payload)
+                created_demands += 1
+                if oid in active:
+                    active.discard(oid)
+                    deactivated += 1
+                log.info("ms_demand_created", extra={"order_id": oid, "externalCode": oid})
         else:
-            if not cfg.test_mode:
-                pending.add(ext_code)
-                save_set(pending_file, pending)
-                log.info("added_to_pending", extra={"order_id": num, "supplierStatus": supplier_status, "wbStatus": wb_status})
+            # Not sorted yet -> keep in active memory
+            if oid not in active:
+                active.add(oid)
+                activated += 1
 
-    seen |= {order_num(o) for o in new_only}
-    save_set(state_file, seen)
+    # Save active state
+    save_set(active_file, active)
 
     log.info(
         "done",
         extra={
-            "created_count": created_count,
-            "skipped_already_created": skipped_already_created,
+            "created_customerorders": created_orders,
+            "created_demands": created_demands,
+            "demand_exists_skipped": demand_exists,
+            "cancelled": cancelled,
+            "active_left": len(active),
+            "activated": activated,
+            "deactivated": deactivated,
             "skipped_no_article": skipped_no_article,
             "skipped_no_product": skipped_no_product,
-            "cancelled_count": cancelled,
-            "demand_created": demand_created,
-            "pending_left": len(pending),
-            "pending_touched": pending_touched,
-            "pending_closed": pending_closed,
             "test_mode": cfg.test_mode,
-            "state_file": state_file,
+            "active_file": active_file,
             "ms_created_file": ms_created_file,
-            "pending_file": pending_file,
+            "min_created_at": min_created_at.isoformat(),
         },
     )
 
