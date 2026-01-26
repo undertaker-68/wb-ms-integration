@@ -98,4 +98,265 @@ def main() -> None:
     ms = MSClient(ms_http)
     wb = WBClient(wb_http)
 
-    log.info("start", extra={"test_m_
+    log.info("start", extra={"test_mode": cfg.test_mode})
+
+    state_file = os.getenv("STATE_FILE", "/root/wb_ms_integration/state_seen_orders.json")
+    bootstrap = os.getenv("BOOTSTRAP", "0") == "1"
+    ms_created_file = os.getenv("MS_CREATED_FILE", "/root/wb_ms_integration/ms_created_orders.json")
+    pending_file = os.getenv("PENDING_FILE", "/root/wb_ms_integration/pending_orders.json")
+    lookback_days = int(os.getenv("ORDER_LOOKBACK_DAYS", "30"))
+
+    min_created_at_iso = os.getenv("MIN_CREATED_AT_ISO", "")
+    min_created_at: datetime | None = None
+    if min_created_at_iso:
+        try:
+            s = min_created_at_iso.replace("Z", "+00:00")
+            min_created_at = datetime.fromisoformat(s)
+            if min_created_at.tzinfo is None:
+                min_created_at = min_created_at.replace(tzinfo=timezone.utc)
+        except Exception:
+            log.warning("bad_MIN_CREATED_AT_ISO_skip", extra={"value": min_created_at_iso})
+            min_created_at = None
+
+    def load_set(path: str) -> set[str]:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception:
+            return set()
+
+    def save_set(path: str, s: set[str]) -> None:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(sorted(s), f, ensure_ascii=False, indent=2)
+
+    new_orders = wb.get_new_orders()
+    log.info("wb_new_orders_loaded", extra={"count": len(new_orders)})
+
+    listed: List[Dict[str, Any]] = []
+    now = datetime.now(timezone.utc)
+    date_from = int((now - timedelta(days=lookback_days)).timestamp())
+    next_ = 0
+    for _ in range(10):
+        page = wb.list_orders(limit=1000, next_=next_, date_from=date_from)
+        batch = page.get("orders", []) if isinstance(page, dict) else []
+        listed.extend(batch)
+        next_ = page.get("next", 0) if isinstance(page, dict) else 0
+        log.info("wb_orders_page", extra={"got": len(batch), "next": next_})
+        if not batch:
+            break
+
+    all_by_id: Dict[int, Dict[str, Any]] = {}
+    for o in new_orders + listed:
+        if "id" in o:
+            all_by_id[int(o["id"])] = o
+    all_orders = list(all_by_id.values())
+
+    if min_created_at is not None:
+        filtered: List[Dict[str, Any]] = []
+        for o in all_orders:
+            ca = o.get("createdAt") or o.get("created_at")
+            if not ca:
+                filtered.append(o)
+                continue
+            try:
+                s = str(ca).replace("Z", "+00:00")
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt >= min_created_at:
+                    filtered.append(o)
+            except Exception:
+                filtered.append(o)
+        all_orders = filtered
+
+    log.info("wb_orders_total", extra={"count": len(all_orders)})
+
+    def order_num(o: Dict[str, Any]) -> str:
+        return str(o["id"])
+
+    seen = load_set(state_file)
+    current = {order_num(o) for o in all_orders}
+
+    if bootstrap or not seen:
+        save_set(state_file, current)
+        log.info("bootstrap_done_skip_processing", extra={"saved": len(current), "state_file": state_file})
+        return
+
+    new_only = [o for o in all_orders if order_num(o) not in seen]
+    log.info("after_filter_new_only", extra={"new_count": len(new_only), "seen_count": len(seen)})
+
+    pending = load_set(pending_file)
+
+    ids_new = [int(o["id"]) for o in new_only if "id" in o]
+    ids_pending = [int(x) for x in pending if str(x).isdigit()]
+    ids = sorted(set(ids_new + ids_pending))
+
+    statuses = wb.get_orders_status(ids) if ids else []
+    status_by_id: Dict[int, Dict[str, Any]] = {int(s["id"]): s for s in statuses if isinstance(s, dict) and "id" in s}
+    log.info("wb_statuses_loaded", extra={"count": len(status_by_id)})
+
+    uniq_articles = sorted({extract_article(o) for o in new_only if extract_article(o)})
+    product_by_article: Dict[str, Dict[str, Any]] = {}
+    for a in uniq_articles:
+        p = ms.find_product_by_article(a)
+        if p:
+            product_by_article[a] = p
+        _t.sleep(0.12)
+    log.info("ms_products_prefetched", extra={"uniq_articles": len(uniq_articles), "found": len(product_by_article)})
+
+    ms_created = load_set(ms_created_file)
+
+    created_count = 0
+    skipped_no_article = 0
+    skipped_no_product = 0
+    skipped_already_created = 0
+    demand_created = 0
+    cancelled = 0
+    pending_touched = 0
+    pending_closed = 0
+
+    # 1) pending
+    if pending:
+        for ext_code in sorted(pending):
+            oid = int(ext_code) if str(ext_code).isdigit() else None
+            if not oid:
+                continue
+
+            st = status_by_id.get(oid, {})
+            supplier_status = st.get("supplierStatus")
+            wb_status = st.get("wbStatus")
+
+            if supplier_status == "cancel" or wb_status == "canceled":
+                pending_closed += 1
+                cancelled += 1
+                pending.discard(str(ext_code))
+                log.info("pending_cancelled_drop", extra={"order_id": str(ext_code)})
+                continue
+
+            if wb_status == "sorted":
+                if cfg.test_mode:
+                    log.info("TEST_MODE_pending_sorted_would_create_demand", extra={"order_id": str(ext_code)})
+                    pending_closed += 1
+                    pending.discard(str(ext_code))
+                    continue
+
+                if not ms.find_demand_by_external_code(str(ext_code)):
+                    ms_order = ms.find_customer_order_by_external_code(str(ext_code))
+                    if not ms_order:
+                        log.warning("pending_ms_order_missing", extra={"order_id": str(ext_code)})
+                        continue
+
+                    ms_positions = ms.get_customer_order_positions(ms_order)
+                    demand_payload = build_ms_demand_payload(cfg, ms_order, ms_positions)
+                    ms.create_demand(demand_payload)
+                    demand_created += 1
+                    log.info("ms_demand_created_from_pending", extra={"order_id": str(ext_code), "externalCode": str(ext_code), "positions": len(ms_positions)})
+                else:
+                    log.info("ms_demand_exists_for_pending", extra={"order_id": str(ext_code)})
+
+                pending_closed += 1
+                pending.discard(str(ext_code))
+                continue
+
+            pending_touched += 1
+
+        save_set(pending_file, pending)
+
+    # 2) new orders
+    for o in new_only:
+        num = order_num(o)
+        ext_code = num
+
+        if ext_code in ms_created:
+            skipped_already_created += 1
+            log.info("skip_already_created", extra={"order_id": num})
+            continue
+
+        article = extract_article(o)
+        if not article:
+            skipped_no_article += 1
+            log.warning("skip_no_article", extra={"order_id": num})
+            continue
+
+        product = product_by_article.get(article)
+        if not product:
+            skipped_no_product += 1
+            log.warning("skip_no_ms_product", extra={"order_id": num, "article": article})
+            continue
+
+        st = status_by_id.get(int(o["id"]), {})
+        supplier_status = st.get("supplierStatus")
+        wb_status = st.get("wbStatus")
+
+        if supplier_status == "cancel" or wb_status == "canceled":
+            cancelled += 1
+            log.info("order_cancelled_seen", extra={"order_id": num})
+            continue
+
+        payload = build_ms_order_payload(cfg, o, product)
+
+        if cfg.test_mode:
+            created_count += 1
+            log.info("TEST_MODE_skip_ms_order_create", extra={"order_id": num, "article": article})
+            ms_order = {
+                "id": "TEST",
+                "meta": {"type": "customerorder", "href": "TEST"},
+                "externalCode": ext_code,
+                "name": ext_code,
+                "organization": payload["organization"],
+                "agent": payload["agent"],
+                "store": payload["store"],
+            }
+            ms_positions = payload["positions"]
+        else:
+            ms_order = ms.create_customer_order(payload)
+            created_count += 1
+            log.info("ms_order_created", extra={"order_id": num, "ms_id": ms_order.get("id"), "article": article})
+            ms_created.add(ext_code)
+            save_set(ms_created_file, ms_created)
+            # позиции только что созданного заказа уже знаем из payload
+            ms_positions = payload["positions"]
+
+        if wb_status == "sorted":
+            if cfg.test_mode:
+                log.info("TEST_MODE_skip_ms_demand_create", extra={"order_id": num, "externalCode": ext_code})
+            else:
+                if not ms.find_demand_by_external_code(ext_code):
+                    demand_payload = build_ms_demand_payload(cfg, ms_order, ms_positions)
+                    ms.create_demand(demand_payload)
+                    demand_created += 1
+                    log.info("ms_demand_created", extra={"order_id": num, "externalCode": ext_code, "positions": len(ms_positions)})
+                else:
+                    log.info("ms_demand_exists", extra={"order_id": num, "externalCode": ext_code})
+        else:
+            if not cfg.test_mode:
+                pending.add(ext_code)
+                save_set(pending_file, pending)
+                log.info("added_to_pending", extra={"order_id": num, "supplierStatus": supplier_status, "wbStatus": wb_status})
+
+    seen |= {order_num(o) for o in new_only}
+    save_set(state_file, seen)
+
+    log.info(
+        "done",
+        extra={
+            "created_count": created_count,
+            "skipped_already_created": skipped_already_created,
+            "skipped_no_article": skipped_no_article,
+            "skipped_no_product": skipped_no_product,
+            "cancelled_count": cancelled,
+            "demand_created": demand_created,
+            "pending_left": len(pending),
+            "pending_touched": pending_touched,
+            "pending_closed": pending_closed,
+            "test_mode": cfg.test_mode,
+            "state_file": state_file,
+            "ms_created_file": ms_created_file,
+            "pending_file": pending_file,
+        },
+    )
+
+
+if __name__ == "__main__":
+    main()
