@@ -8,7 +8,7 @@ class MSClient:
     def __init__(self, http):
         self.http = http
 
-     def get_by_href(self, href: str) -> Dict[str, Any]:
+    def get_by_href(self, href: str) -> Dict[str, Any]:
         """GET по абсолютному href (meta.href) из МойСклад.
 
         В ответах МС (meta.href) обычно приходит абсолютная ссылка.
