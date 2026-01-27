@@ -1,3 +1,6 @@
+cd /root/wb_ms_integration
+
+cat > app/ms_client.py <<'PY'
 import logging
 from typing import Any, Dict, Optional, List
 
@@ -9,23 +12,16 @@ class MSClient:
         self.http = http
 
     def get_by_href(self, href: str) -> Dict[str, Any]:
-        """GET по абсолютному href (meta.href) из МойСклад.
-
-        В ответах МС (meta.href) обычно приходит абсолютная ссылка.
-        Наш HttpClient работает с path относительно base_url.
-        """
+        """GET по абсолютному href (meta.href) из МойСклад."""
         href = (href or "").strip()
         if not href:
             return {}
 
         base = (self.http.base_url or "").rstrip("/")
 
-        # если href уже относительный путь
         if href.startswith("/"):
             path = href
         else:
-            # типичный формат: https://.../api/remap/1.2/entity/product/...
-            # но base_url может быть как с /api/remap/1.2, так и без него — поэтому режем максимально безопасно
             if base and href.startswith(base):
                 path = href[len(base):]
             else:
@@ -33,16 +29,12 @@ class MSClient:
                 if marker in href:
                     path = href.split(marker, 1)[1]
                 else:
-                    # fallback: пробуем трактовать как путь
                     path = "/" + href.lstrip("/")
 
         return self.http.request("GET", path) or {}
 
     def report_stock_by_store(self, store_id: str, *, limit: int = 1000) -> List[Dict[str, Any]]:
-        """Отчет МС: остатки с разрезом по складам (/report/stock/bystore) для конкретного склада.
-
-        Возвращает все строки отчета (с пагинацией).
-        """
+        """Отчет МС: остатки по складу (/report/stock/bystore) с пагинацией."""
         base = (self.http.base_url or "").rstrip("/")
         store_href = f"{base}/entity/store/{store_id}"
 
@@ -62,96 +54,4 @@ class MSClient:
             offset += limit
 
         return out
-
-    def find_product_by_article(self, article: str) -> Optional[Dict[str, Any]]:
-        # Ищем по артикулу (article)
-        resp = self.http.request("GET", "/entity/product", params={"filter": f"article={article}"})
-        rows = resp.get("rows") if isinstance(resp, dict) else None
-        if rows:
-            return rows[0]
-        # иногда артикул лежит в code
-        resp = self.http.request("GET", "/entity/product", params={"filter": f"code={article}"})
-        rows = resp.get("rows") if isinstance(resp, dict) else None
-        if rows:
-            return rows[0]
-        return None
-
-    def create_customer_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return self.http.request("POST", "/entity/customerorder", json_body=payload)
-
-    def find_customer_order_by_external_code(self, external_code: str) -> Optional[Dict[str, Any]]:
-        resp = self.http.request("GET", "/entity/customerorder", params={"filter": f"externalCode={external_code}"})
-        rows = resp.get("rows") if isinstance(resp, dict) else None
-        if rows:
-            return rows[0]
-        return None
-
-    def find_demand_by_external_code(self, external_code: str) -> Optional[Dict[str, Any]]:
-        resp = self.http.request("GET", "/entity/demand", params={"filter": f"externalCode={external_code}"})
-        rows = resp.get("rows") if isinstance(resp, dict) else None
-        if rows:
-            return rows[0]
-        return None
-
-    def create_demand(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return self.http.request("POST", "/entity/demand", json_body=payload)
-
-    def update_customer_order_state(self, ms_order: Dict[str, Any], state_id: str) -> Dict[str, Any]:
-        """Идемпотентно обновляет статус CustomerOrder в МС."""
-        if not state_id:
-            return ms_order
-
-        href = (ms_order.get("meta") or {}).get("href") or ""
-        if not href:
-            return ms_order
-        order_id = href.rstrip("/").split("/")[-1]
-
-        target_href = f"{self.http.base_url}/entity/customerorder/metadata/states/{state_id}"
-        current_href = ((ms_order.get("state") or {}).get("meta") or {}).get("href") or ""
-        if current_href == target_href:
-            return ms_order
-
-        payload = {"state": {"meta": {"type": "state", "href": target_href}}}
-        updated = self.http.request("PUT", f"/entity/customerorder/{order_id}", json_body=payload)
-        return updated or ms_order
-
-    def get_customer_order_positions(self, ms_order: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        В ответе списка customerorder обычно нет positions.
-        Позиции надо брать отдельным запросом: /entity/customerorder/{id}/positions
-        """
-        href = (ms_order.get("meta") or {}).get("href") or ""
-        if not href:
-            return []
-        order_id = href.rstrip("/").split("/")[-1]
-        resp = self.http.request("GET", f"/entity/customerorder/{order_id}/positions")
-        rows = resp.get("rows") if isinstance(resp, dict) else None
-        return rows or []
-
-    def set_demand_applicable(self, demand: dict, applicable: bool) -> dict:
-        href = (demand.get("meta") or {}).get("href") or ""
-        if not href:
-            return demand
-        demand_id = href.rstrip("/").split("/")[-1]
-        payload = {"applicable": bool(applicable)}
-        updated = self.http.request("PUT", f"/entity/demand/{demand_id}", json_body=payload)
-        return updated or demand
-
-    def update_demand_state(self, demand: Dict[str, Any], state_id: str) -> Dict[str, Any]:
-        """Идемпотентно обновляет статус Demand (Отгрузки) в МС."""
-        if not state_id:
-            return demand
-
-        href = (demand.get("meta") or {}).get("href") or ""
-        if not href:
-            return demand
-        demand_id = href.rstrip("/").split("/")[-1]
-
-        target_href = f"{self.http.base_url}/entity/demand/metadata/states/{state_id}"
-        current_href = ((demand.get("state") or {}).get("meta") or {}).get("href") or ""
-        if current_href == target_href:
-            return demand
-
-        payload = {"state": {"meta": {"type": "state", "href": target_href}}}
-        updated = self.http.request("PUT", f"/entity/demand/{demand_id}", json_body=payload)
-        return updated or demand
+PY
