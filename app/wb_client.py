@@ -1,4 +1,3 @@
-cat > app/wb_client.py <<'PY'
 import logging
 from typing import Any, Dict, List
 
@@ -17,4 +16,3 @@ class WBClient:
         """
         body = {"stocks": stocks}
         return self.http.request("PUT", f"/api/v3/stocks/{warehouse_id}", json_body=body, raise_for_status=False)
-PY
