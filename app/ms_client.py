@@ -8,6 +8,61 @@ class MSClient:
     def __init__(self, http):
         self.http = http
 
+     def get_by_href(self, href: str) -> Dict[str, Any]:
+        """GET по абсолютному href (meta.href) из МойСклад.
+
+        В ответах МС (meta.href) обычно приходит абсолютная ссылка.
+        Наш HttpClient работает с path относительно base_url.
+        """
+        href = (href or "").strip()
+        if not href:
+            return {}
+
+        base = (self.http.base_url or "").rstrip("/")
+
+        # если href уже относительный путь
+        if href.startswith("/"):
+            path = href
+        else:
+            # типичный формат: https://.../api/remap/1.2/entity/product/...
+            # но base_url может быть как с /api/remap/1.2, так и без него — поэтому режем максимально безопасно
+            if base and href.startswith(base):
+                path = href[len(base):]
+            else:
+                marker = "/api/remap/1.2"
+                if marker in href:
+                    path = href.split(marker, 1)[1]
+                else:
+                    # fallback: пробуем трактовать как путь
+                    path = "/" + href.lstrip("/")
+
+        return self.http.request("GET", path) or {}
+
+    def report_stock_by_store(self, store_id: str, *, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Отчет МС: остатки с разрезом по складам (/report/stock/bystore) для конкретного склада.
+
+        Возвращает все строки отчета (с пагинацией).
+        """
+        base = (self.http.base_url or "").rstrip("/")
+        store_href = f"{base}/entity/store/{store_id}"
+
+        out: List[Dict[str, Any]] = []
+        offset = 0
+        while True:
+            resp = self.http.request(
+                "GET",
+                "/report/stock/bystore",
+                params={"store": store_href, "limit": limit, "offset": offset},
+            )
+            rows = (resp or {}).get("rows") if isinstance(resp, dict) else None
+            rows = rows or []
+            out.extend(rows)
+            if len(rows) < limit:
+                break
+            offset += limit
+
+        return out
+
     def find_product_by_article(self, article: str) -> Optional[Dict[str, Any]]:
         # Ищем по артикулу (article)
         resp = self.http.request("GET", "/entity/product", params={"filter": f"article={article}"})
