@@ -1,4 +1,3 @@
-cat > app/http.py <<'PY'
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -76,4 +75,3 @@ class HttpClient:
         if last_resp is not None:
             last_resp.raise_for_status()
         raise RuntimeError("HTTP request failed without response")
-PY
