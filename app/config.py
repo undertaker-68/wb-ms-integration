@@ -1,4 +1,3 @@
-cat > app/config.py <<'PY'
 import os
 from dataclasses import dataclass
 from dotenv import load_dotenv
@@ -67,4 +66,3 @@ def load_config() -> Config:
         http_timeout_sec=int(_opt("HTTP_TIMEOUT_SEC", "30")),
         test_mode=_bool("TEST_MODE", default=False),
     )
-PY
