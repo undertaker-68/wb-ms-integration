@@ -1,4 +1,3 @@
-cat > app/stocks_sync.py <<'PY'
 import logging
 from typing import Dict, List, Tuple
 
@@ -167,4 +166,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-PY
