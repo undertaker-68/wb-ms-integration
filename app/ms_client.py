@@ -1,6 +1,3 @@
-cd /root/wb_ms_integration
-
-cat > app/ms_client.py <<'PY'
 import logging
 from typing import Any, Dict, Optional, List
 
@@ -54,4 +51,3 @@ class MSClient:
             offset += limit
 
         return out
-PY
