@@ -53,29 +53,17 @@ class MSClient:
         return out
 
     def find_product_by_article(self, article: str) -> Optional[Dict[str, Any]]:
-        """Найти товар/вариант в МС по артикулу (article). Возвращает 1-й найденный."""
         article = (article or "").strip()
         if not article:
             return None
 
-        # 1) Сначала ищем по товарам
         r = self.http.request(
             "GET",
             "/entity/product",
             params={"filter": f"article={article}", "limit": 1},
+            raise_for_status=False,
         )
         rows = (r or {}).get("rows") if isinstance(r, dict) else None
         if rows:
             return rows[0]
-
-        # 2) Потом по вариантам (если артикул на variant)
-        r = self.http.request(
-            "GET",
-            "/entity/variant",
-            params={"filter": f"article={article}", "limit": 1},
-        )
-        rows = (r or {}).get("rows") if isinstance(r, dict) else None
-        if rows:
-            return rows[0]
-
         return None
