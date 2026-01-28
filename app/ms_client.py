@@ -15,8 +15,8 @@ class MSClient:
       - app/stocks_sync.py
     """
 
-    base_url: str
-    token: str
+    def __init__(self, http, token=None):
+        self.http = http
 
     def __post_init__(self) -> None:
         self.http = HttpClient(
