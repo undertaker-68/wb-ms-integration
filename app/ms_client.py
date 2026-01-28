@@ -1,10 +1,6 @@
-# app/ms_client.py
 from __future__ import annotations
-
 from typing import Any, Dict, Iterable, Optional
-
 from .http import HttpClient
-
 
 class MSClient:
     """
