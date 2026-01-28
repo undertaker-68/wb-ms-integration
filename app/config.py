@@ -41,6 +41,7 @@ class Config:
     ms_status_cancelled_id: str
     ms_status_cancelled_by_seller_id: str
     ms_demand_status_id: str
+    ms_status_confirm_id: str
 
     # WB Marketplace
     wb_base_url: str
@@ -68,6 +69,7 @@ def load_config() -> Config:
         ms_status_cancelled_id=_opt("MS_STATUS_CANCELLED_ID", ""),
         ms_status_cancelled_by_seller_id=_opt("MS_STATUS_CANCELLED_BY_SELLER_ID", ""),
         ms_demand_status_id=_opt("MS_DEMAND_STATUS_ID", ""),
+        ms_status_confirm_id=_opt("MS_STATUS_CONFIRM_ID", _opt("MS_STATUS_NEW_ID", "")),
 
         wb_base_url=_opt("WB_BASE_URL", "https://marketplace-api.wildberries.ru"),
         wb_token=_must("WB_TOKEN"),
