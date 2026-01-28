@@ -26,8 +26,8 @@ class MSClient:
 
     # ----------- helpers -----------
     def _state_href(self, entity: str, state_id: str) -> str:
-        # e.g. /entity/customerorder/metadata/states/<id>
-        return f"{self.base_url}/entity/{entity}/metadata/states/{state_id}"
+        base = (self.http.base_url or "").rstrip("/")
+        return f"{base}/entity/{entity}/metadata/states/{state_id}"
 
     def _first_row(self, resp: dict) -> Optional[dict]:
         rows = resp.get("rows") or []
