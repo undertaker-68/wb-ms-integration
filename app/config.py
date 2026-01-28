@@ -34,6 +34,13 @@ class Config:
     ms_base_url: str
     ms_token: str
     ms_store_id_wb: str
+    ms_status_new_id: str
+    ms_status_shipped_id: str
+    ms_status_delivering_id: str
+    ms_status_delivered_id: str
+    ms_status_cancelled_id: str
+    ms_status_cancelled_by_seller_id: str
+    ms_demand_status_id: str
 
     # WB Marketplace
     wb_base_url: str
@@ -54,6 +61,13 @@ def load_config() -> Config:
         ms_base_url=_opt("MS_BASE_URL", "https://api.moysklad.ru/api/remap/1.2"),
         ms_token=_must("MS_TOKEN"),
         ms_store_id_wb=_must("MS_STORE_ID_WB"),
+        ms_status_new_id=_opt("MS_STATUS_NEW_ID", ""),
+        ms_status_shipped_id=_opt("MS_STATUS_SHIPPED_ID", ""),
+        ms_status_delivering_id=_opt("MS_STATUS_DELIVERING_ID", ""),
+        ms_status_delivered_id=_opt("MS_STATUS_DELIVERED_ID", ""),
+        ms_status_cancelled_id=_opt("MS_STATUS_CANCELLED_ID", ""),
+        ms_status_cancelled_by_seller_id=_opt("MS_STATUS_CANCELLED_BY_SELLER_ID", ""),
+        ms_demand_status_id=_opt("MS_DEMAND_STATUS_ID", ""),
 
         wb_base_url=_opt("WB_BASE_URL", "https://marketplace-api.wildberries.ru"),
         wb_token=_must("WB_TOKEN"),
