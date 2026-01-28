@@ -96,7 +96,9 @@ class MSClient:
     def create_customer_order(self, payload: dict) -> dict:
         return self.http.request("POST", "/entity/customerorder", json_body=payload)
 
-    def update_customer_order_state(self, order_href: str, state_id: str) -> dict:
+    def update_customer_order_state(self, order: dict, state_id: str):
+        order_href = order["meta"]["href"]
+    
         body = {
             "state": {
                 "meta": {
@@ -106,7 +108,8 @@ class MSClient:
                 }
             }
         }
-        return self.http.request("PUT", order_href, json_body=body)
+
+    return self.http.request("PUT", order_href, json_body=body)
 
     def get_customer_order_positions(self, order_href: str) -> dict:
         # order_href is absolute, positions endpoint is {href}/positions
